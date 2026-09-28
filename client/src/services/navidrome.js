@@ -2,12 +2,16 @@ import CryptoJS from 'crypto-js';
 
 const SUBSONIC_API_VERSION = '1.16.1';
 const SUBSONIC_CLIENT_NAME = 'navidrome-jam';
+const SESSION_STORAGE_KEY = 'navidrome_session';
+const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days, renewed on each visit
+const LEGACY_SESSION_KEYS = ['navidrome_username', 'navidrome_token', 'navidrome_salt'];
 
 /**
  * Navidrome Subsonic API Client
  *
- * SECURITY: Credentials stored in sessionStorage (cleared on tab close).
- * Validated on restore to detect tampering/expiry.
+ * SECURITY: Stores username + salted token (never the password) in localStorage
+ * for 7 days since the last visit. Validated with Navidrome on restore, so a
+ * changed password invalidates the stored session.
  */
 class NavidromeClient {
   constructor(baseUrl) {
@@ -75,26 +79,54 @@ class NavidromeClient {
     this.token = token;
     this.salt = salt;
 
-    // Store in sessionStorage
-    sessionStorage.setItem('navidrome_username', username);
-    sessionStorage.setItem('navidrome_token', token);
-    sessionStorage.setItem('navidrome_salt', salt);
+    this.saveSession();
 
     return data['subsonic-response'];
   }
 
   /**
-   * Restore session from sessionStorage and validate with Navidrome.
-   * Credentials are cleared when the tab closes.
+   * Persist current credentials with a fresh 7-day expiry
+   */
+  saveSession() {
+    localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify({
+      username: this.username,
+      token: this.token,
+      salt: this.salt,
+      expiresAt: Date.now() + SESSION_TTL_MS
+    }));
+  }
+
+  /**
+   * Read stored credentials, or null if missing/expired/corrupt
+   */
+  loadStoredSession() {
+    try {
+      const session = JSON.parse(localStorage.getItem(SESSION_STORAGE_KEY));
+      if (!session?.username || !session.token || !session.salt) return null;
+      if (!session.expiresAt || session.expiresAt < Date.now()) {
+        this.clearStoredCredentials();
+        return null;
+      }
+      return session;
+    } catch {
+      this.clearStoredCredentials();
+      return null;
+    }
+  }
+
+  /**
+   * Restore session from localStorage and validate with Navidrome.
+   * A successful restore renews the 7-day expiry.
    */
   async restoreSession() {
-    const username = sessionStorage.getItem('navidrome_username');
-    const token = sessionStorage.getItem('navidrome_token');
-    const salt = sessionStorage.getItem('navidrome_salt');
+    // Drop credentials left by the old sessionStorage-based login
+    LEGACY_SESSION_KEYS.forEach(key => sessionStorage.removeItem(key));
 
-    if (!username || !token || !salt) {
+    const stored = this.loadStoredSession();
+    if (!stored) {
       return false;
     }
+    const { username, token, salt } = stored;
 
     // Validate credentials with Navidrome ping
     try {
@@ -114,6 +146,7 @@ class NavidromeClient {
         this.username = username;
         this.token = token;
         this.salt = salt;
+        this.saveSession();
         return true;
       } else {
         // Credentials are invalid (auth failed), clear storage
@@ -139,12 +172,10 @@ class NavidromeClient {
   }
 
   /**
-   * Clear stored credentials from sessionStorage
+   * Clear stored credentials
    */
   clearStoredCredentials() {
-    sessionStorage.removeItem('navidrome_username');
-    sessionStorage.removeItem('navidrome_token');
-    sessionStorage.removeItem('navidrome_salt');
+    localStorage.removeItem(SESSION_STORAGE_KEY);
   }
 
   /**
