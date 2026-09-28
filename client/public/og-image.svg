@@ -145,9 +145,6 @@
   <rect x="720" y="404" width="120" height="26" fill="#fff" stroke="#808080" stroke-width="1" rx="1"/>
   <text x="780" y="422" text-anchor="middle" font-family="Tahoma, Verdana, sans-serif" font-size="12" fill="#000080" font-weight="bold">Co-host Mode</text>
 
-  <!-- URL display -->
-  <text x="600" y="462" text-anchor="middle" font-family="'VT323', 'Courier New', monospace" font-size="24" fill="#0000ff" text-decoration="underline">jam.zhgnv.com</text>
-
   <!-- Status bar at bottom -->
   <rect x="148" y="490" width="904" height="20" fill="#c0c0c0"/>
   <rect x="148" y="490" width="904" height="1" fill="#808080"/>

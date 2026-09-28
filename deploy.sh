@@ -9,7 +9,7 @@ echo "🚀 Starting Navidrome Jam deployment..."
 
 # Configuration
 INSTALL_DIR="/opt/navidrome-jam"
-SUBDOMAIN="jam.zhgnv.com"  # Change this to your subdomain
+SUBDOMAIN="jam.example.com"  # Change this to your subdomain
 
 # Colors for output
 RED='\033[0;31m'
@@ -20,7 +20,7 @@ NC='\033[0m' # No Color
 # Check if running on server
 if [ ! -d "$INSTALL_DIR" ]; then
     echo -e "${RED}Error: $INSTALL_DIR not found. Please clone the repository first.${NC}"
-    echo "Run: sudo git clone https://github.com/zhiganov/navidrome-jam.git $INSTALL_DIR"
+    echo "Run: sudo git clone https://github.com/Jelmerovereem/navidrome-jam.git $INSTALL_DIR"
     exit 1
 fi
 

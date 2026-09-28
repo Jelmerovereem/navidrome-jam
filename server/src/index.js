@@ -81,12 +81,14 @@ const app = express();
 const httpServer = createServer(app);
 const clientUrl = process.env.CLIENT_URL || '*';
 const allowedOrigins = clientUrl === '*' ? null : clientUrl.split(',').map(u => u.trim());
+// Public client URL used in outgoing emails (first CLIENT_URL origin)
+const publicClientUrl = allowedOrigins?.[0] || null;
 
 const io = new Server(httpServer, {
   cors: {
     origin: allowedOrigins
       ? (origin, cb) => {
-          if (!origin || allowedOrigins.includes(origin) || origin.endsWith('.vercel.app')) {
+          if (!origin || allowedOrigins.includes(origin)) {
             cb(null, true);
           } else {
             cb(new Error('Not allowed by CORS'));
@@ -188,7 +190,7 @@ async function updateUploadLikes(trackId, delta) {
   console.log(`Upload likes: ${metaKey} → ${newCount} (${delta > 0 ? '+' : ''}${delta})`);
 }
 
-// Persistent data directory (Railway volume or local ./data)
+// Persistent data directory (mounted volume or local ./data)
 const DATA_DIR = process.env.DATA_DIR || './data';
 
 // Room state snapshot (persisted to volume, survives server restarts)
@@ -400,15 +402,19 @@ app.get('/health', (req, res) => {
   });
 });
 
-// Proxy communities from scenius-digest (avoids CORS issues for browser clients)
+// Proxy communities from an external groups API (avoids CORS issues for browser clients).
+// Disabled unless COMMUNITIES_API_URL is set.
 let communitiesCache = { data: null, fetchedAt: 0 };
 app.get('/api/communities', async (req, res) => {
+  if (!process.env.COMMUNITIES_API_URL) {
+    return res.json({ communities: [] });
+  }
   try {
     const now = Date.now();
     if (communitiesCache.data && now - communitiesCache.fetchedAt < COMMUNITIES_CACHE_TTL_MS) {
       return res.json(communitiesCache.data);
     }
-    const response = await fetch('https://scenius-digest.vercel.app/api/groups');
+    const response = await fetch(process.env.COMMUNITIES_API_URL);
     if (!response.ok) throw new Error('Failed to fetch groups');
     const { groups } = await response.json();
     const communities = Object.entries(groups).map(([id, info]) => ({
@@ -919,8 +925,8 @@ app.post('/api/waitlist', waitlistLimiter, async (req, res) => {
       const token = crypto.randomBytes(ACTION_TOKEN_BYTES).toString('hex');
       actionTokens.set(token, { email: normalizedEmail, name: name.trim(), createdAt: Date.now() });
 
-      const serverUrl = process.env.RAILWAY_PUBLIC_DOMAIN
-        ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
+      const serverUrl = process.env.PUBLIC_SERVER_URL
+        ? process.env.PUBLIC_SERVER_URL.replace(/\/$/, '')
         : `http://localhost:${process.env.PORT || DEFAULT_PORT}`;
       const sendUrl = `${serverUrl}/api/admin/quick-send/${token}`;
 
@@ -1136,7 +1142,7 @@ function getInviteEmailHTML(name, code) {
 
       <p style="font-size:12px;color:#000;margin:0 0 4px"><strong>How to join:</strong></p>
       <ol style="font-size:12px;color:#000;margin:0 0 16px;padding-left:20px">
-        <li style="margin-bottom:4px">Go to <a href="https://jam.zhgnv.com" style="color:#0000ff">jam.zhgnv.com</a></li>
+        <li style="margin-bottom:4px">${publicClientUrl ? `Go to <a href="${publicClientUrl}" style="color:#0000ff">${publicClientUrl.replace(/^https?:\/\//, '')}</a>` : 'Open Navidrome Jam'}</li>
         <li style="margin-bottom:4px">Click <strong>Sign Up</strong></li>
         <li>Enter the code above</li>
       </ol>
@@ -1524,14 +1530,14 @@ function getAdminPageHTML(adminKey) {
     </div>
 
     <details class="env-box">
-      <summary>INVITE_CODES env var (for Railway)</summary>
+      <summary>INVITE_CODES env var</summary>
       <pre id="env-var">Loading...</pre>
-      <div class="note">Copy this value and paste it into your Railway environment variables to persist codes across deploys.</div>
+      <div class="note">Copy this value and paste it into your server's environment variables to persist codes across deploys.</div>
     </details>
 
     <div class="note">
       &#9888; Codes are stored in memory. Runtime-generated codes will be lost on server restart.
-      Copy the INVITE_CODES env var above and update Railway to persist them.
+      Copy the INVITE_CODES env var above and update your server environment to persist them.
     </div>
   </div>
 </div>

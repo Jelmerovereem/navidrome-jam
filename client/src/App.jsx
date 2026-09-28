@@ -1185,7 +1185,7 @@ function App() {
   const authFooter = (
     <footer className="auth-footer">
       <span className="auth-footer-server">{navidrome.baseUrl}</span>
-      <a href="https://github.com/zhiganov/navidrome-jam" target="_blank" rel="noopener" className="footer-link">
+      <a href="https://github.com/Jelmerovereem/navidrome-jam" target="_blank" rel="noopener" className="footer-link">
         <Icon name="github" size={14} /> Source on GitHub
       </a>
     </footer>

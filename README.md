@@ -1,8 +1,6 @@
 # Navidrome Jam
 
-Synchronized music playback for listening to the same music with friends in real-time. Built as an extension to [Navidrome](https://www.navidrome.org/). Features a retro Windows 98 / GeoCities aesthetic.
-
-**Live at [jam.zhgnv.com](https://jam.zhgnv.com)**
+Synchronized music playback for listening to the same music with friends in real-time. Built as an extension to [Navidrome](https://www.navidrome.org/). Features a modern, mobile-friendly dark UI.
 
 <img width="1200" height="630" alt="og-image" src="https://github.com/user-attachments/assets/6eba935c-632b-407e-b905-6d334d6a0eab" />
 
@@ -53,9 +51,8 @@ Spotify Jam lets you listen to music together, but it requires Spotify Premium a
 - **Playlists** — Pick a Navidrome playlist and play it for the room (in order or shuffled), or add it to the queue
 - Invite-code-based self-service registration
 - Room resilience — 5-minute grace period on disconnect + state snapshots to persistent volume
+- Modern dark UI with album-art grid, blurred-cover now-playing view, and SVG icons
 - Mobile-friendly layout (Queue/People tabs on ≤1024px screens)
-- Windows 98 / GeoCities retro UI theme
-- **[Jam With Boo](https://boo.zhgnv.com)** — Valentine's edition with kawaii avatars and synchronized paw hold
 
 ## Tech Stack
 
@@ -66,24 +63,12 @@ Spotify Jam lets you listen to music together, but it requires Spotify Premium a
 
 ## Deployment
 
-Choose your deployment method:
+The sync server needs persistent WebSocket connections, so host it on a VPS or any platform that runs long-lived Node.js processes (not serverless functions). The client is a static Vite build and can be served from anywhere (e.g. nginx on the same VPS).
 
-### Option 1: Vercel + Railway (Recommended)
-
-**Fastest deployment, ~$0-5/month**
-
-1. **Deploy Server**: [Railway.app](https://railway.app) — deploy from GitHub, set env vars (see `server/.env.example`)
-2. **Deploy Client**: [Vercel.com](https://vercel.com) — import project, set `VITE_NAVIDROME_URL` and `VITE_JAM_SERVER_URL`
-3. **Set invite codes**: Add `INVITE_CODES`, `NAVIDROME_ADMIN_USER`, `NAVIDROME_ADMIN_PASS` on Railway for self-service registration
-
-See [VERCEL_QUICKSTART.md](./VERCEL_QUICKSTART.md) for details.
-
-### Option 2: VPS (Self-Hosted)
-
-**Full control, ~$5-10/month**
+### VPS (Self-Hosted)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/zhiganov/navidrome-jam/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Jelmerovereem/navidrome-jam/main/install.sh | bash
 ```
 
 📖 [VPS Deployment Guide](./DEPLOYMENT.md)
@@ -105,7 +90,7 @@ curl -fsSL https://raw.githubusercontent.com/zhiganov/navidrome-jam/main/install
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/zhiganov/navidrome-jam.git
+   git clone https://github.com/Jelmerovereem/navidrome-jam.git
    cd navidrome-jam
    ```
 
@@ -161,7 +146,7 @@ navidrome-jam/
 │   ├── src/
 │   │   ├── index.js         # Main server with validation & rate limiting
 │   │   ├── roomManager.js   # Room state management & cleanup
-│   │   └── sftpUploader.js  # SFTP upload pipeline to PikaPods
+│   │   └── sftpUploader.js  # SFTP upload pipeline to the Navidrome music folder
 │   └── test-client.html     # HTML test client
 ├── client/           # React web client
 │   ├── src/
@@ -213,9 +198,14 @@ cd client && npm run dev
 - **Room settings** — Private/public rooms, password protection, permission levels
 - **Automated tests** — Jest for sync server, Vitest + React Testing Library for client
 - **TypeScript migration** — Full codebase migration (server + client)
-- **My Community integration** — Embed shared listening tab in [My Community](https://github.com/zhiganov/my-community) extension
 
 ## Changelog
+
+### 2026-09-28 — Modern UI
+
+- **Redesign**: Replaced the Windows 98 / GeoCities theme with a modern dark UI — design tokens, inline SVG icon set, album-art grid, collection headers with Play / Shuffle / Queue all, blurred-cover now-playing card.
+- **Mobile**: Compact player, larger touch targets, safe-area insets, two-column album grid on phones.
+- **Fork cleanup**: Removed upstream hosting config (Vercel, Railway) and domain references. Upload SFTP env vars renamed to `SFTP_*`; communities proxy now opt-in via `COMMUNITIES_API_URL`.
 
 ### 2026-02-15 — Playlists, Room Resilience
 
@@ -235,12 +225,12 @@ cd client && npm run dev
 
 ### 2026-02-14 — Jam With Boo (Valentine's Edition)
 
-- **Jam With Boo**: Valentine's Day edition at [boo.zhgnv.com](https://boo.zhgnv.com). Separate branch (`feature/jam-with-boo`) with its own domain, OG images, and favicon.
+- **Jam With Boo**: Valentine's Day edition. Separate branch (`feature/jam-with-boo`) with its own domain, OG images, and favicon.
 - **Kawaii avatars**: 9 characters powered by [react-kawaii](https://github.com/elizabetdev/react-kawaii) (Cat, Ghost, Planet, IceCream, Mug, Backpack, SpeechBubble, Chocolate, Browser). Avatar picker on join, visible in user list and dance strip.
 - **Paw hold climax**: Hold the paw button for 8 seconds — when 2+ users hold simultaneously, avatars converge into a heart burst with screen flash. Climax persists as long as everyone keeps holding.
 - **Dance strip**: Animated avatar row above the now-playing bar. Avatars bounce when music plays, converge during paw hold, and burst apart on climax.
 - **Valentine theme**: Pink/rose accent colors layered over the Win98 base. Custom OG image and favicon for social sharing.
-- **Multi-origin CORS**: Server `CLIENT_URL` now supports comma-separated origins (e.g., `https://jam.zhgnv.com,https://boo.zhgnv.com`).
+- **Multi-origin CORS**: Server `CLIENT_URL` now supports comma-separated origins (e.g., `https://jam.example.com,https://boo.example.com`).
 
 ### 2026-02-11 — Browse Modes, Mobile Layout, Compilation Handling
 
@@ -275,7 +265,6 @@ cd client && npm run dev
 - Navidrome Subsonic API integration (search, stream, metadata)
 - Invite-code-based self-service registration
 - Windows 98 / GeoCities retro UI theme
-- Deployed to Vercel (client) + Railway (server)
 
 ## Contributing
 

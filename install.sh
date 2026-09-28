@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Quick installation script for Navidrome Jam on Ubuntu/Debian VPS
-# Run with: curl -fsSL https://raw.githubusercontent.com/zhiganov/navidrome-jam/main/install.sh | bash
+# Run with: curl -fsSL https://raw.githubusercontent.com/Jelmerovereem/navidrome-jam/main/install.sh | bash
 
 set -e
 
@@ -39,8 +39,8 @@ fi
 # Prompt for configuration
 echo -e "${YELLOW}Please provide the following information:${NC}"
 echo ""
-read -p "Subdomain (e.g., jam.zhgnv.com): " SUBDOMAIN
-read -p "Navidrome URL (e.g., https://music.zhgnv.com): " NAVIDROME_URL
+read -p "Subdomain (e.g., jam.example.com): " SUBDOMAIN
+read -p "Navidrome URL (e.g., https://music.example.com): " NAVIDROME_URL
 
 if [ -z "$SUBDOMAIN" ] || [ -z "$NAVIDROME_URL" ]; then
     echo -e "${RED}Error: Subdomain and Navidrome URL are required.${NC}"
@@ -107,7 +107,7 @@ fi
 # Clone repository
 if [ ! -d "$INSTALL_DIR" ]; then
     echo -e "${YELLOW}Cloning Navidrome Jam repository...${NC}"
-    sudo git clone https://github.com/zhiganov/navidrome-jam.git $INSTALL_DIR
+    sudo git clone https://github.com/Jelmerovereem/navidrome-jam.git $INSTALL_DIR
     sudo chown -R $USER:$USER $INSTALL_DIR
 else
     echo -e "${YELLOW}Repository already exists, pulling latest changes...${NC}"

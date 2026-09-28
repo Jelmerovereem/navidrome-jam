@@ -5,7 +5,7 @@ Deploy Navidrome Jam to your own server with HTTPS.
 ## Prerequisites
 
 - A VPS/server (Ubuntu 20.04+ recommended)
-- Domain name with DNS access (e.g., jam.zhgnv.com)
+- Domain name with DNS access (e.g., jam.example.com)
 - Navidrome instance already running
 - SSH access to your server
 
@@ -51,7 +51,7 @@ sudo npm install -g pm2
 
 ```bash
 cd /opt
-sudo git clone https://github.com/zhiganov/navidrome-jam.git
+sudo git clone https://github.com/Jelmerovereem/navidrome-jam.git
 sudo chown -R $USER:$USER navidrome-jam
 cd navidrome-jam
 ```
@@ -69,7 +69,7 @@ nano .env
 Edit `.env`:
 ```env
 PORT=3001
-CLIENT_URL=https://jam.zhgnv.com
+CLIENT_URL=https://jam.example.com
 NAVIDROME_URL=http://localhost:4533  # Or your Navidrome URL
 ```
 
@@ -84,7 +84,7 @@ nano .env
 Edit `.env`:
 ```env
 VITE_NAVIDROME_URL=https://your-navidrome-url.com
-VITE_JAM_SERVER_URL=https://jam.zhgnv.com
+VITE_JAM_SERVER_URL=https://jam.example.com
 ```
 
 ### 4. Build Client for Production
@@ -150,14 +150,14 @@ Wait for DNS propagation (can take up to 24 hours, usually <5 minutes).
 ### 8. Setup SSL with Let's Encrypt
 
 ```bash
-sudo certbot --nginx -d jam.zhgnv.com
+sudo certbot --nginx -d jam.example.com
 ```
 
 Follow the prompts. Certbot will automatically configure SSL and set up auto-renewal.
 
 ### 9. Test Deployment
 
-Visit https://jam.zhgnv.com in your browser!
+Visit https://jam.example.com in your browser!
 
 ---
 
@@ -170,7 +170,7 @@ Create `/etc/nginx/sites-available/navidrome-jam`:
 server {
     listen 80;
     listen [::]:80;
-    server_name jam.zhgnv.com;
+    server_name jam.example.com;
 
     # Let's Encrypt verification
     location /.well-known/acme-challenge/ {
@@ -187,11 +187,11 @@ server {
 server {
     listen 443 ssl http2;
     listen [::]:443 ssl http2;
-    server_name jam.zhgnv.com;
+    server_name jam.example.com;
 
     # SSL Configuration (Certbot will modify this)
-    ssl_certificate /etc/letsencrypt/live/jam.zhgnv.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/jam.zhgnv.com/privkey.pem;
+    ssl_certificate /etc/letsencrypt/live/jam.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/jam.example.com/privkey.pem;
     include /etc/letsencrypt/options-ssl-nginx.conf;
     ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
 
@@ -342,7 +342,7 @@ sudo certbot renew --dry-run  # Test renewal
 ### SSL certificate issues
 - Ensure DNS is properly configured
 - Check firewall allows ports 80 and 443
-- Run certbot with verbose: `sudo certbot --nginx -d jam.zhgnv.com -v`
+- Run certbot with verbose: `sudo certbot --nginx -d jam.example.com -v`
 
 ### Client can't connect to Navidrome
 - Verify `VITE_NAVIDROME_URL` in client `.env`
@@ -380,32 +380,9 @@ sudo certbot renew --dry-run  # Test renewal
 ## Cost Estimate
 
 - **VPS**: $5-10/month (DigitalOcean, Linode, Hetzner)
-- **Domain**: Already owned (zhgnv.com)
+- **Domain**: Any domain you control
 - **SSL**: Free (Let's Encrypt)
 - **Total**: ~$5-10/month
-
----
-
-## Alternative: Deploy to Vercel (Client Only)
-
-If you only want to host the client on Vercel and run the server elsewhere:
-
-1. Install Vercel CLI:
-   ```bash
-   npm install -g vercel
-   ```
-
-2. Deploy client:
-   ```bash
-   cd client
-   vercel --prod
-   ```
-
-3. Set environment variables in Vercel dashboard:
-   - `VITE_NAVIDROME_URL`
-   - `VITE_JAM_SERVER_URL`
-
-Note: You still need to host the sync server on a VPS.
 
 ---
 

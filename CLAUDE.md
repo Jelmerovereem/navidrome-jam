@@ -19,7 +19,7 @@ npm install && npm run dev    # Dev with hot-reload (node --watch)
 npm start                      # Production
 ```
 
-Environment: Copy `.env.example` to `.env`. Note: `.env.example` is incomplete — see deployment section for all vars.
+Environment: Copy `.env.example` to `.env` (all vars listed there and below).
 
 ### Client
 ```bash
@@ -55,9 +55,9 @@ No automated tests — manual testing with test-client.html or full stack.
 ## Code Architecture
 
 ### Server (`server/src/`)
-Three files: `index.js` (Express + Socket.io, REST endpoints, WebSocket handlers, admin panel), `roomManager.js` (room state with grace periods), `sftpUploader.js` (SFTP upload pipeline to PikaPods).
+Three files: `index.js` (Express + Socket.io, REST endpoints, WebSocket handlers, admin panel), `roomManager.js` (room state with grace periods), `sftpUploader.js` (SFTP upload pipeline to the Navidrome music folder).
 
-Key design: room state snapshots to Railway volume every 30s + SIGTERM, 5-min grace period for empty rooms, invite codes/waitlist/deleted codes persist to JSON on volume, `canControl()` authorization (host OR co-host), `trust proxy` for Railway.
+Key design: room state snapshots to the data volume every 30s + SIGTERM, 5-min grace period for empty rooms, invite codes/waitlist/deleted codes persist to JSON on volume, `canControl()` authorization (host OR co-host), `trust proxy` for running behind a reverse proxy.
 
 ### Client (`client/src/`)
 Three screens in `App.jsx`: Login → Room Selection → Jam Session.
@@ -68,25 +68,24 @@ Service layer: `navidrome.js` (Subsonic API + MD5 auth), `jamClient.js` (Socket.
 
 ## Deployment
 
-- **Client**: Vercel (auto-deploys on push to main) — https://jam.zhgnv.com
-- **Server**: Railway (auto-deploys on push to main, root: `/server`) — https://navidrome-jam-production.up.railway.app
-- **Navidrome**: PikaPods — https://airborne-unicorn.pikapod.net
-- See: `VERCEL_QUICKSTART.md`, `DEPLOYMENT.md`
+This repo is a fork — there is no hosted deployment or preview environment wired up.
 
-**Critical for WebSocket**: Sync server needs persistent connections → Railway, not Vercel Functions.
+- **Server**: any host that runs long-lived Node.js processes (VPS + PM2, see `DEPLOYMENT.md`). Not serverless — Socket.io needs persistent connections.
+- **Client**: static Vite build (`client/dist`), serve from nginx or any static host.
 
-**CORS**: Socket.io accepts `CLIENT_URL` origins + any `*.vercel.app` (preview deploys).
+**CORS**: Socket.io accepts only the comma-separated `CLIENT_URL` origins (or `*` if unset).
 
 ### Environment Variables
 
-Server `.env.example` is incomplete. Full list of production vars:
-- `CLIENT_URL` — deployed client URL (CORS)
+All server vars (see `server/.env.example`):
+- `CLIENT_URL` — client URL(s), comma-separated (CORS; first one is used in invite emails)
 - `NAVIDROME_URL`, `NAVIDROME_ADMIN_USER`, `NAVIDROME_ADMIN_PASS` — for registration (if unset, registration disabled gracefully)
-- `DATA_DIR` — Railway volume mount (`/data`)
+- `DATA_DIR` — persistent data directory (defaults to `./data`)
 - `RESEND_API_KEY`, `RESEND_FROM_EMAIL` — invite code emails
 - `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ADMIN_CHAT_ID` — waitlist notifications
-- `RAILWAY_PUBLIC_DOMAIN` — action token URLs in Telegram messages
-- `PIKAPODS_SFTP_HOST`, `PIKAPODS_SFTP_PORT`, `PIKAPODS_SFTP_USER`, `PIKAPODS_SFTP_PASS`, `PIKAPODS_MUSIC_PATH` — user uploads
+- `PUBLIC_SERVER_URL` — public server base URL (e.g. `https://jam-api.example.com`) for action token links in Telegram messages
+- `SFTP_HOST`, `SFTP_PORT`, `SFTP_USER`, `SFTP_PASS`, `SFTP_MUSIC_PATH` — user uploads to the Navidrome music folder (uploads disabled if unset)
+- `COMMUNITIES_API_URL` — optional groups API for room community tags (feature hidden if unset)
 
 ## Admin Panel
 
@@ -106,8 +105,8 @@ Check `docs/plans/` before planning new features:
 
 ## Branches
 
-- `main` — production (auto-deploys)
-- `feature/jam-with-boo` — Valentine's edition at boo.zhgnv.com (separate domain, kawaii avatars, comma-separated `CLIENT_URL` for multi-domain CORS)
+- `main` — default branch
+- `feature/modern-ui` — modern dark UI redesign
 
 ## Reference
 

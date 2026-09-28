@@ -6,7 +6,7 @@ const CLEANUP_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 
 export class SftpUploader {
   constructor() {
-    this.basePath = process.env.PIKAPODS_MUSIC_PATH || '/music';
+    this.basePath = process.env.SFTP_MUSIC_PATH || '/music';
     this.uploadsPath = `${this.basePath}/${UPLOADS_DIR}`;
     this.metaPath = `${this.uploadsPath}/${META_FILENAME}`;
   }
@@ -17,10 +17,10 @@ export class SftpUploader {
   async connect() {
     const sftp = new SftpClient();
     await sftp.connect({
-      host: process.env.PIKAPODS_SFTP_HOST,
-      port: parseInt(process.env.PIKAPODS_SFTP_PORT || '22', 10),
-      username: process.env.PIKAPODS_SFTP_USER,
-      password: process.env.PIKAPODS_SFTP_PASS,
+      host: process.env.SFTP_HOST,
+      port: parseInt(process.env.SFTP_PORT || '22', 10),
+      username: process.env.SFTP_USER,
+      password: process.env.SFTP_PASS,
     });
     return sftp;
   }
@@ -30,9 +30,9 @@ export class SftpUploader {
    */
   isConfigured() {
     return !!(
-      process.env.PIKAPODS_SFTP_HOST &&
-      process.env.PIKAPODS_SFTP_USER &&
-      process.env.PIKAPODS_SFTP_PASS
+      process.env.SFTP_HOST &&
+      process.env.SFTP_USER &&
+      process.env.SFTP_PASS
     );
   }
 

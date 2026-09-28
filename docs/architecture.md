@@ -103,19 +103,19 @@ All Subsonic responses are wrapped in `{ "subsonic-response": { status, ...data 
 
 Design doc: `docs/plans/2026-02-11-user-uploads-design.md`. Implementation in `server/src/sftpUploader.js`.
 
-Registered users upload audio files through the web client. Files stream through the Jam server to PikaPods via SFTP (no temp files on Railway), where Navidrome auto-indexes them.
+Registered users upload audio files through the web client. Files stream through the Jam server to the Navidrome host via SFTP (no temp files on the Jam server), where Navidrome auto-indexes them.
 - **Multi-file**: Client supports selecting/dropping multiple files at once; uploads run sequentially via a queue with per-file progress tracking
 - **Stream-through**: Upload pipes directly from HTTP to SFTP via `sftpUploader.js`
 - **Rate limit**: 50 uploads per user per hour (server-side)
 - **Cleanup**: Non-permanent files auto-deleted after 30 days; liked files are protected
 - **Permanent flag**: Users can mark up to 50 uploads as permanent; admin can override
 - **File limits**: 200MB max per file, allowed formats: mp3, flac, ogg, opus, m4a, wav, aac
-- **Storage path**: `/music/jam-uploads/<username>/` on PikaPods
-- **Metadata**: `.uploads-meta.json` on PikaPods tracks upload dates and permanent flags
+- **Storage path**: `/music/jam-uploads/<username>/` on the Navidrome host
+- **Metadata**: `.uploads-meta.json` on the Navidrome host tracks upload dates and permanent flags
 
-## Persistence (Railway Volume)
+## Persistence (Data Volume)
 
-Three JSON files on `DATA_DIR` (Railway volume at `/data`):
+Three JSON files on `DATA_DIR` (persistent volume, e.g. `/data`):
 - `invite-codes.json` — valid codes, used codes (code→username), sent codes (code→{email,name}), deleted codes
 - `waitlist.json` — name, email, message, joinedAt timestamp
 - `rooms-snapshot.json` — periodic room state snapshot (every 30s + SIGTERM), auto-deleted after restore
