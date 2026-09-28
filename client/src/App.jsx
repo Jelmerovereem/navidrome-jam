@@ -7,6 +7,8 @@ import './App.css';
 
 const ROOM_POLL_INTERVAL_MS = 10000;
 const RESTART_TRACK_THRESHOLD_S = 3; // seconds before "previous" restarts current track
+const SCROBBLE_MAX_S = 240; // scrobble after half the track or 4 minutes, whichever comes first
+const NOW_PLAYING_THROTTLE_MS = 30000;
 
 function App() {
   // Get client instances from context
@@ -897,6 +899,58 @@ function App() {
     jamClient.play(prevTrack.id, 0);
     loadTrack(prevTrack.id);
   }, [canControl, currentTrack, jamClient, playHistory, queue]);
+
+  // Report playback to Navidrome like other Subsonic clients: "Now Playing" while
+  // audio is playing, and a scrobble once enough of the track has been heard.
+  // Each listener reports with their own account.
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio || !currentTrack) return;
+
+    const trackId = currentTrack.id;
+    let startedAt = null;
+    let listened = 0;
+    let lastPosition = null;
+    let lastNowPlayingAt = 0;
+    let scrobbled = false;
+
+    const handlePlaying = () => {
+      lastPosition = audio.currentTime;
+      if (startedAt === null) startedAt = Date.now();
+      if (Date.now() - lastNowPlayingAt < NOW_PLAYING_THROTTLE_MS) return;
+      lastNowPlayingAt = Date.now();
+      navidrome.scrobble(trackId, false).catch(err => console.error('Now playing update failed:', err));
+    };
+
+    const handleTimeUpdate = () => {
+      if (audio.paused || lastPosition === null) return;
+      const delta = audio.currentTime - lastPosition;
+      lastPosition = audio.currentTime;
+      // Only count normal playback progress, not seeks or sync corrections
+      if (delta > 0 && delta < 2) listened += delta;
+
+      const threshold = Math.min(SCROBBLE_MAX_S, (audio.duration || Infinity) / 2);
+      if (!scrobbled && listened >= threshold) {
+        scrobbled = true;
+        navidrome.scrobble(trackId, true, startedAt).catch(err => console.error('Scrobble failed:', err));
+      }
+    };
+
+    const handlePause = () => {
+      lastPosition = null;
+    };
+
+    audio.addEventListener('playing', handlePlaying);
+    audio.addEventListener('timeupdate', handleTimeUpdate);
+    audio.addEventListener('pause', handlePause);
+    if (!audio.paused) handlePlaying();
+
+    return () => {
+      audio.removeEventListener('playing', handlePlaying);
+      audio.removeEventListener('timeupdate', handleTimeUpdate);
+      audio.removeEventListener('pause', handlePause);
+    };
+  }, [currentTrack, navidrome]);
 
   const handlePlaybackUpdate = useCallback((time, paused) => {
     setIsPlaying(!paused);

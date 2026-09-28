@@ -258,13 +258,16 @@ class NavidromeClient {
   }
 
   /**
-   * Scrobble (mark as played)
+   * Report playback to Navidrome.
+   * submission=false registers "Now Playing" (shows this player as active in Navidrome);
+   * submission=true records a play (play count, last played, external scrobblers).
+   * @param {number} time - when playback started (ms since epoch)
    */
-  async scrobble(id, submission = true) {
+  async scrobble(id, submission = true, time = Date.now()) {
     return this.fetch('scrobble.view', {
       id,
       submission,
-      time: Date.now()
+      time
     });
   }
 
