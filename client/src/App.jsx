@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavidrome } from './contexts/NavidromeContext';
 import { useJam } from './contexts/JamContext';
 import SyncedAudioPlayer from './components/SyncedAudioPlayer';
+import { Icon, Logo } from './components/Icons';
 import './App.css';
 
 const ROOM_POLL_INTERVAL_MS = 10000;
@@ -36,6 +37,7 @@ function App() {
   const [isCreatingRoom, setIsCreatingRoom] = useState(false);
   const [isJoiningRoom, setIsJoiningRoom] = useState(false);
   const [activeRooms, setActiveRooms] = useState([]);
+  const [codeCopied, setCodeCopied] = useState(false);
   const [communities, setCommunities] = useState([]);
 
   const [currentTrack, setCurrentTrack] = useState(null);
@@ -923,223 +925,467 @@ function App() {
     }
   }, [currentTrack, userReaction, likeActive, jamClient, navidrome, favorites, browseMode]);
 
+  const roleLabel = isHost ? 'Host' : canControl ? 'Co-host' : 'Listener';
+
+  const joinRoomById = (roomId) => {
+    setRoomInput(roomId);
+    setIsJoiningRoom(true);
+    setRoomError('');
+    try {
+      jamClient.joinRoom(roomId, username);
+    } catch (e) {
+      setRoomError(e.message);
+      setIsJoiningRoom(false);
+    }
+  };
+
+  const handleCopyRoomCode = async () => {
+    try {
+      await navigator.clipboard.writeText(currentRoom.id);
+      setCodeCopied(true);
+      setTimeout(() => setCodeCopied(false), 1500);
+    } catch {
+      // clipboard unavailable (e.g. insecure context) — code is visible anyway
+    }
+  };
+
+  const handleCommunityChange = (e) => {
+    localStorage.setItem('jam_community', e.target.value);
+    jamClient.updateCommunity(e.target.value);
+  };
+
+  // Append songs to the queue; if nothing is playing, start the first one
+  const handleQueueAll = (songs) => {
+    const items = songs.map(s => ({ id: s.id, title: s.title, artist: s.artist, album: s.album }));
+    if (!currentTrack && items.length > 0) {
+      const [first, ...rest] = items;
+      jamClient.updateQueue([...queue, ...rest]);
+      jamClient.play(first.id, 0);
+      loadTrack(first.id);
+    } else {
+      jamClient.updateQueue([...queue, ...items]);
+    }
+  };
+
+  const moveQueueItem = (index, delta) => {
+    const target = index + delta;
+    if (target < 0 || target >= queue.length) return;
+    const newQueue = [...queue];
+    [newQueue[index], newQueue[target]] = [newQueue[target], newQueue[index]];
+    jamClient.updateQueue(newQueue);
+  };
+
+  const removeQueueItem = (index) => {
+    jamClient.updateQueue(queue.filter((_, i) => i !== index));
+  };
+
+  const toggleRepeat = () => {
+    const next = !repeatMode;
+    setRepeatMode(next);
+    localStorage.setItem('jam_repeat', next ? 'on' : 'off');
+  };
+
+  // Keyboard activation for clickable list rows
+  const onActivate = (fn) => (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      fn();
+    }
+  };
+
+  const renderCover = (coverArt, size, className = '') => (
+    coverArt ? (
+      <img
+        src={navidrome.getCoverArtUrl(coverArt, size)}
+        alt=""
+        className={`cover ${className}`}
+        loading="lazy"
+      />
+    ) : (
+      <div className={`cover cover-placeholder ${className}`}>
+        <Icon name="disc" size={Math.min(40, Math.round(size / 4))} />
+      </div>
+    )
+  );
+
+  const renderSongActions = (song, contextSongs = null) => canControl && (
+    <div className="song-actions">
+      <button
+        className="icon-btn"
+        onClick={(e) => { e.stopPropagation(); handlePlayTrack(song, contextSongs); }}
+        title="Play"
+        aria-label={`Play ${song.title}`}
+      >
+        <Icon name="play" size={16} />
+      </button>
+      <button
+        className="icon-btn"
+        onClick={(e) => { e.stopPropagation(); handleAddToQueue(song); }}
+        title="Add to queue"
+        aria-label={`Add ${song.title} to queue`}
+      >
+        <Icon name="listPlus" size={18} />
+      </button>
+    </div>
+  );
+
+  const renderTrackRow = (song, { index, contextSongs = null, meta, showThumb = false } = {}) => (
+    <li key={song.id} className={`track-row${currentTrack?.id === song.id ? ' is-current' : ''}`}>
+      {showThumb
+        ? renderCover(song.coverArt, 80, 'track-thumb')
+        : <span className="track-num">{index !== undefined ? index : ''}</span>}
+      <div className="row-info">
+        <strong>{song.title}</strong>
+        <span>{meta}</span>
+      </div>
+      {song.duration ? <span className="track-duration">{formatDuration(song.duration)}</span> : null}
+      {renderSongActions(song, contextSongs)}
+    </li>
+  );
+
+  const renderCollectionActions = (onPlay, onShuffle, onQueue) => canControl && (
+    <div className="collection-actions">
+      {onPlay && (
+        <button className="btn btn-primary btn-sm" onClick={onPlay}>
+          <Icon name="play" size={14} /> Play
+        </button>
+      )}
+      {onShuffle && (
+        <button className="btn btn-secondary btn-sm" onClick={onShuffle}>
+          <Icon name="shuffle" size={14} /> Shuffle
+        </button>
+      )}
+      {onQueue && (
+        <button className="btn btn-secondary btn-sm" onClick={onQueue}>
+          <Icon name="listPlus" size={14} /> Queue all
+        </button>
+      )}
+    </div>
+  );
+
+  const renderPeople = () => (
+    <>
+      {communities.length > 0 && (isHost || currentRoom.community) && (
+        <div className="room-setting">
+          <span className="room-setting-label">Community</span>
+          {isHost ? (
+            <select
+              className="select"
+              value={currentRoom.community || ''}
+              onChange={handleCommunityChange}
+              aria-label="Community"
+            >
+              <option value="">None</option>
+              {communities.map(c => (
+                <option key={c.id} value={c.id}>{c.name}</option>
+              ))}
+            </select>
+          ) : (
+            <span className="chip chip-static">
+              {communities.find(c => c.id === currentRoom.community)?.name || currentRoom.community}
+            </span>
+          )}
+        </div>
+      )}
+      <ul className="people-list">
+        {currentRoom.users?.map((user) => {
+          const userIsHost = user.id === currentRoom.hostId;
+          const userIsCoHost = (currentRoom.coHosts || []).includes(user.id);
+          return (
+            <li key={user.id} className="person">
+              <span className="avatar" style={{ '--hue': avatarHue(user.username) }}>
+                {(user.username || '?').charAt(0).toUpperCase()}
+              </span>
+              <span className="person-name">
+                {user.username}
+                {user.id === jamClient.userId && <span className="you-tag">you</span>}
+              </span>
+              {userIsHost && <span className="role-badge role-host"><Icon name="crown" size={12} /> Host</span>}
+              {userIsCoHost && <span className="role-badge role-cohost">Co-host</span>}
+              {isHost && !userIsHost && (
+                userIsCoHost ? (
+                  <button
+                    className="icon-btn icon-btn-sm danger"
+                    onClick={() => jamClient.demoteCoHost(user.id)}
+                    title="Remove co-host"
+                    aria-label={`Remove ${user.username} as co-host`}
+                  >
+                    <Icon name="userMinus" size={16} />
+                  </button>
+                ) : (
+                  <button
+                    className="icon-btn icon-btn-sm"
+                    onClick={() => jamClient.promoteCoHost(user.id)}
+                    title="Make co-host"
+                    aria-label={`Make ${user.username} co-host`}
+                  >
+                    <Icon name="userPlus" size={16} />
+                  </button>
+                )
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    </>
+  );
+
+  const renderQueue = () => (
+    queue.length === 0 ? (
+      <div className="empty-state small">
+        <Icon name="listMusic" size={28} />
+        <p>Queue is empty</p>
+        <span>Add songs from the library to keep the music going.</span>
+      </div>
+    ) : (
+      <ol className="queue-list">
+        {queue.map((track, index) => (
+          <li key={`${track.id}-${index}`} className="queue-item">
+            <span className="queue-num">{index + 1}</span>
+            <div className="row-info">
+              <strong>{track.title}</strong>
+              <span>{track.artist}</span>
+            </div>
+            {canControl && (
+              <div className="queue-controls">
+                <button
+                  className="icon-btn icon-btn-sm"
+                  onClick={() => moveQueueItem(index, -1)}
+                  disabled={index === 0}
+                  title="Move up"
+                  aria-label="Move up"
+                >
+                  <Icon name="chevronUp" size={16} />
+                </button>
+                <button
+                  className="icon-btn icon-btn-sm"
+                  onClick={() => moveQueueItem(index, 1)}
+                  disabled={index === queue.length - 1}
+                  title="Move down"
+                  aria-label="Move down"
+                >
+                  <Icon name="chevronDown" size={16} />
+                </button>
+                <button
+                  className="icon-btn icon-btn-sm danger"
+                  onClick={() => removeQueueItem(index)}
+                  title="Remove"
+                  aria-label="Remove from queue"
+                >
+                  <Icon name="x" size={16} />
+                </button>
+              </div>
+            )}
+          </li>
+        ))}
+      </ol>
+    )
+  );
+
+  const authFooter = (
+    <footer className="auth-footer">
+      <span className="auth-footer-server">{navidrome.baseUrl}</span>
+      <a href="https://github.com/zhiganov/navidrome-jam" target="_blank" rel="noopener" className="footer-link">
+        <Icon name="github" size={14} /> Source on GitHub
+      </a>
+    </footer>
+  );
+
   // Login screen
   if (!isAuthenticated) {
     return (
-      <div className="app login-screen">
-        <div className="login-container win98-window">
-          <div className="win98-titlebar">
-            <span className="win98-titlebar-text">Navidrome Jam - Welcome</span>
-            <div className="win98-titlebar-buttons">
-              <button className="win98-titlebar-btn">_</button>
-              <button className="win98-titlebar-btn">X</button>
-            </div>
-          </div>
-          <div className="win98-body">
+      <div className="app auth-screen">
+        <div className="auth-card card">
+          <div className="auth-brand">
+            <Logo size={56} />
             <h1>Navidrome Jam</h1>
-            <div className="login-subtitle">~ The Music Lounge ~</div>
-
-            <hr className="retro-divider" />
-
-            {registerSuccess && <div className="success">{registerSuccess}</div>}
-
-            <div className="auth-tabs">
-              <button
-                className={`auth-tab ${authMode === 'login' ? 'active' : ''}`}
-                onClick={() => { setAuthMode('login'); setLoginError(''); }}
-              >
-                Login
-              </button>
-              <button
-                className={`auth-tab ${authMode === 'signup' ? 'active' : ''}`}
-                onClick={() => { setAuthMode('signup'); setLoginError(''); }}
-              >
-                Sign Up
-              </button>
-            </div>
-
-            <div className="auth-tab-content">
-              {authMode === 'login' ? (
-                <form onSubmit={handleLogin}>
-                  <div className="form-row">
-                    <label>User:</label>
-                    <input
-                      type="text"
-                      className="win98-input"
-                      placeholder="Username"
-                      value={username}
-                      onChange={(e) => setUsername(e.target.value)}
-                      required
-                      disabled={isLoggingIn}
-                    />
-                  </div>
-                  <div className="form-row">
-                    <label>Pass:</label>
-                    <input
-                      type="password"
-                      className="win98-input"
-                      placeholder="Password"
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
-                      required
-                      disabled={isLoggingIn}
-                    />
-                  </div>
-                  <div className="form-actions">
-                    <button type="submit" className="win98-btn" disabled={isLoggingIn}>
-                      {isLoggingIn ? 'Logging in...' : 'OK'}
-                    </button>
-                  </div>
-                </form>
-              ) : (
-                <>
-                  {waitlistSuccess ? (
-                    <div className="waitlist-confirmed">
-                      <div className="success">{waitlistSuccess}</div>
-                      <button
-                        className="win98-btn"
-                        style={{ marginTop: '8px' }}
-                        onClick={() => { setWaitlistSuccess(''); setShowWaitlist(false); }}
-                      >
-                        Back to Sign Up
-                      </button>
-                    </div>
-                  ) : showWaitlist ? (
-                    <form onSubmit={handleJoinWaitlist}>
-                      <div className="waitlist-header">Join the Waitlist</div>
-                      <div className="form-row">
-                        <label>Name:</label>
-                        <input
-                          type="text"
-                          className="win98-input"
-                          placeholder="Your name"
-                          value={waitlistName}
-                          onChange={(e) => setWaitlistName(e.target.value)}
-                          required
-                          disabled={isJoiningWaitlist}
-                        />
-                      </div>
-                      <div className="form-row">
-                        <label>Email:</label>
-                        <input
-                          type="email"
-                          className="win98-input"
-                          placeholder="your@email.com"
-                          value={waitlistEmail}
-                          onChange={(e) => setWaitlistEmail(e.target.value)}
-                          required
-                          disabled={isJoiningWaitlist}
-                        />
-                      </div>
-                      <div className="form-row">
-                        <label>Why?</label>
-                        <input
-                          type="text"
-                          className="win98-input"
-                          placeholder="Why do you want to join? (optional)"
-                          value={waitlistMessage}
-                          onChange={(e) => setWaitlistMessage(e.target.value)}
-                          disabled={isJoiningWaitlist}
-                        />
-                      </div>
-                      <div className="form-actions">
-                        <button type="submit" className="win98-btn" disabled={isJoiningWaitlist}>
-                          {isJoiningWaitlist ? 'Joining...' : 'Join Waitlist'}
-                        </button>
-                        <button
-                          type="button"
-                          className="win98-btn"
-                          onClick={() => setShowWaitlist(false)}
-                          disabled={isJoiningWaitlist}
-                        >
-                          Cancel
-                        </button>
-                      </div>
-                    </form>
-                  ) : (
-                    <>
-                      <form onSubmit={handleRegister}>
-                        <div className="form-row">
-                          <label>User:</label>
-                          <input
-                            type="text"
-                            className="win98-input"
-                            placeholder="Choose a username"
-                            value={username}
-                            onChange={(e) => setUsername(e.target.value)}
-                            required
-                            disabled={isRegistering}
-                            minLength={3}
-                            maxLength={50}
-                          />
-                        </div>
-                        <div className="form-row">
-                          <label>Pass:</label>
-                          <input
-                            type="password"
-                            className="win98-input"
-                            placeholder="Choose a password"
-                            value={password}
-                            onChange={(e) => setPassword(e.target.value)}
-                            required
-                            disabled={isRegistering}
-                            minLength={6}
-                          />
-                        </div>
-                        <div className="form-row">
-                          <label>Invite:</label>
-                          <input
-                            type="text"
-                            className="win98-input"
-                            placeholder="Invite code"
-                            value={inviteCode}
-                            onChange={(e) => setInviteCode(e.target.value)}
-                            required
-                            disabled={isRegistering}
-                          />
-                        </div>
-                        <div className="form-actions">
-                          <button type="submit" className="win98-btn" disabled={isRegistering}>
-                            {isRegistering ? 'Creating...' : 'Register'}
-                          </button>
-                        </div>
-                      </form>
-                      <div className="waitlist-link">
-                        No invite code?{' '}
-                        <button
-                          className="link-btn"
-                          onClick={() => { setShowWaitlist(true); setLoginError(''); }}
-                        >
-                          Join the waitlist
-                        </button>
-                      </div>
-                    </>
-                  )}
-                </>
-              )}
-            </div>
-
-            {loginError && <div className="error">{loginError}</div>}
-
-            <div className="server-info">
-              Server: {navidrome.baseUrl}
-            </div>
+            <p>Listen to your library together, perfectly in sync.</p>
           </div>
+
+          {registerSuccess && <div className="alert alert-success">{registerSuccess}</div>}
+
+          <div className="segmented" role="tablist">
+            <button
+              role="tab"
+              aria-selected={authMode === 'login'}
+              className={`segmented-btn${authMode === 'login' ? ' active' : ''}`}
+              onClick={() => { setAuthMode('login'); setLoginError(''); }}
+            >
+              Log in
+            </button>
+            <button
+              role="tab"
+              aria-selected={authMode === 'signup'}
+              className={`segmented-btn${authMode === 'signup' ? ' active' : ''}`}
+              onClick={() => { setAuthMode('signup'); setLoginError(''); }}
+            >
+              Sign up
+            </button>
+          </div>
+
+          {authMode === 'login' ? (
+            <form onSubmit={handleLogin} className="form">
+              <label className="field">
+                <span>Username</span>
+                <input
+                  type="text"
+                  className="input"
+                  placeholder="Your Navidrome username"
+                  autoComplete="username"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  required
+                  disabled={isLoggingIn}
+                />
+              </label>
+              <label className="field">
+                <span>Password</span>
+                <input
+                  type="password"
+                  className="input"
+                  placeholder="••••••••"
+                  autoComplete="current-password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  required
+                  disabled={isLoggingIn}
+                />
+              </label>
+              <button type="submit" className="btn btn-primary btn-lg btn-block" disabled={isLoggingIn}>
+                {isLoggingIn ? <><span className="spinner" /> Logging in…</> : 'Log in'}
+              </button>
+            </form>
+          ) : waitlistSuccess ? (
+            <div className="waitlist-confirmed">
+              <div className="alert alert-success">{waitlistSuccess}</div>
+              <button
+                className="btn btn-secondary btn-block"
+                onClick={() => { setWaitlistSuccess(''); setShowWaitlist(false); }}
+              >
+                Back to sign up
+              </button>
+            </div>
+          ) : showWaitlist ? (
+            <form onSubmit={handleJoinWaitlist} className="form">
+              <div className="form-intro">
+                <h2>Join the waitlist</h2>
+                <p>We'll email you an invite code when a spot opens up.</p>
+              </div>
+              <label className="field">
+                <span>Name</span>
+                <input
+                  type="text"
+                  className="input"
+                  placeholder="Your name"
+                  autoComplete="name"
+                  value={waitlistName}
+                  onChange={(e) => setWaitlistName(e.target.value)}
+                  required
+                  disabled={isJoiningWaitlist}
+                />
+              </label>
+              <label className="field">
+                <span>Email</span>
+                <input
+                  type="email"
+                  className="input"
+                  placeholder="you@example.com"
+                  autoComplete="email"
+                  value={waitlistEmail}
+                  onChange={(e) => setWaitlistEmail(e.target.value)}
+                  required
+                  disabled={isJoiningWaitlist}
+                />
+              </label>
+              <label className="field">
+                <span>Why do you want to join? <em>(optional)</em></span>
+                <input
+                  type="text"
+                  className="input"
+                  placeholder="Tell us a bit about yourself"
+                  value={waitlistMessage}
+                  onChange={(e) => setWaitlistMessage(e.target.value)}
+                  disabled={isJoiningWaitlist}
+                />
+              </label>
+              <div className="form-row-actions">
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => setShowWaitlist(false)}
+                  disabled={isJoiningWaitlist}
+                >
+                  Cancel
+                </button>
+                <button type="submit" className="btn btn-primary" disabled={isJoiningWaitlist}>
+                  {isJoiningWaitlist ? 'Joining…' : 'Join waitlist'}
+                </button>
+              </div>
+            </form>
+          ) : (
+            <>
+              <form onSubmit={handleRegister} className="form">
+                <label className="field">
+                  <span>Username</span>
+                  <input
+                    type="text"
+                    className="input"
+                    placeholder="Choose a username"
+                    autoComplete="username"
+                    value={username}
+                    onChange={(e) => setUsername(e.target.value)}
+                    required
+                    disabled={isRegistering}
+                    minLength={3}
+                    maxLength={50}
+                  />
+                </label>
+                <label className="field">
+                  <span>Password</span>
+                  <input
+                    type="password"
+                    className="input"
+                    placeholder="At least 6 characters"
+                    autoComplete="new-password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    required
+                    disabled={isRegistering}
+                    minLength={6}
+                  />
+                </label>
+                <label className="field">
+                  <span>Invite code</span>
+                  <input
+                    type="text"
+                    className="input"
+                    placeholder="Paste your invite code"
+                    value={inviteCode}
+                    onChange={(e) => setInviteCode(e.target.value)}
+                    required
+                    disabled={isRegistering}
+                  />
+                </label>
+                <button type="submit" className="btn btn-primary btn-lg btn-block" disabled={isRegistering}>
+                  {isRegistering ? <><span className="spinner" /> Creating account…</> : 'Create account'}
+                </button>
+              </form>
+              <div className="auth-switch">
+                No invite code?{' '}
+                <button
+                  className="link-btn"
+                  onClick={() => { setShowWaitlist(true); setLoginError(''); }}
+                >
+                  Join the waitlist
+                </button>
+              </div>
+            </>
+          )}
+
+          {loginError && <div className="alert alert-error">{loginError}</div>}
         </div>
 
-        <div className="geocities-footer">
-          <div className="under-construction">
-            * * * Best viewed in Netscape Navigator 4.0 at 800x600 * * *
-          </div>
-          <div className="visitor-counter">
-            <span className="counter-digit">0</span>
-            <span className="counter-digit">0</span>
-            <span className="counter-digit">4</span>
-            <span className="counter-digit">2</span>
-            <span className="counter-digit">0</span>
-          </div>
-          <a href="https://github.com/zhiganov/navidrome-jam" target="_blank" rel="noopener" className="github-badge">&#9733; Source Code on GitHub &#9733;</a>
-        </div>
+        {authFooter}
       </div>
     );
   }
@@ -1147,524 +1393,421 @@ function App() {
   // Room selection screen
   if (!currentRoom) {
     return (
-      <div className="app room-screen">
-        <div className="room-container win98-window">
-          <div className="win98-titlebar">
-            <span className="win98-titlebar-text">Navidrome Jam - Room Select</span>
-            <div className="win98-titlebar-buttons">
-              <button className="win98-titlebar-btn">_</button>
-              <button className="win98-titlebar-btn">X</button>
-            </div>
-          </div>
-          <div className="win98-body">
-            <h1>Navidrome Jam</h1>
-            <p>Welcome, {username}!</p>
-
-            <hr className="retro-divider" />
-
-            <div className="room-controls">
-              <fieldset className="win98-fieldset">
-                <legend>Join or Create a Room</legend>
-                <div className="room-input-group">
-                  <input
-                    type="text"
-                    className="win98-input"
-                    placeholder="ROOM CODE"
-                    value={roomInput}
-                    onChange={(e) => setRoomInput(e.target.value.toUpperCase())}
-                    maxLength={6}
-                    disabled={isJoiningRoom || isCreatingRoom}
-                  />
-                  <button
-                    className="win98-btn"
-                    onClick={handleJoinRoom}
-                    disabled={!isConnected || isJoiningRoom || isCreatingRoom}
-                  >
-                    {isJoiningRoom ? 'Joining...' : 'Join'}
-                  </button>
-                </div>
-                <button
-                  className="win98-btn"
-                  onClick={handleCreateRoom}
-                  disabled={!isConnected || isCreatingRoom || isJoiningRoom}
-                >
-                  {isCreatingRoom ? 'Creating...' : 'Create New Room'}
-                </button>
-              </fieldset>
-            </div>
-
-            {roomError && <div className="error">{roomError}</div>}
-            {!isConnected && <div className="warning">Connecting to Jam server...</div>}
-
-            {activeRooms.length > 0 && (
-              <>
-                <hr className="retro-divider" />
-                <fieldset className="win98-fieldset active-rooms-fieldset">
-                  <legend>Active Rooms ({activeRooms.length})</legend>
-                  <ul className="active-rooms-list">
-                    {activeRooms.map(room => (
-                      <li key={room.id} className="active-room-item">
-                        <div className="active-room-info">
-                          <span className="active-room-code">{room.id}</span>
-                          <span className="active-room-meta">
-                            {room.hostName} &middot; {room.userCount} {room.userCount === 1 ? 'listener' : 'listeners'}
-                          </span>
-                          {room.currentTrack && (
-                            <span className="active-room-track">
-                              {room.currentTrack.playing ? '\u266B ' : '\u23F8 '}
-                              {room.currentTrack.title}{room.currentTrack.artist ? ` \u2013 ${room.currentTrack.artist}` : ''}
-                            </span>
-                          )}
-                        </div>
-                        <button
-                          className="win98-btn active-room-join"
-                          onClick={() => {
-                            setRoomInput(room.id);
-                            setIsJoiningRoom(true);
-                            setRoomError('');
-                            try { jamClient.joinRoom(room.id, username); } catch (e) { setRoomError(e.message); setIsJoiningRoom(false); }
-                          }}
-                          disabled={!isConnected || isJoiningRoom || isCreatingRoom}
-                        >
-                          Join
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                </fieldset>
-              </>
-            )}
-
-            <div className="form-actions">
-              <button onClick={handleLogout} className="win98-btn logout-btn">
-                Logout
+      <div className="app auth-screen room-screen">
+        <div className="room-layout">
+          <div className="card room-card">
+            <div className="room-card-top">
+              <div className="brand">
+                <Logo size={32} />
+                <span className="brand-name">Navidrome Jam</span>
+              </div>
+              <button onClick={handleLogout} className="btn btn-ghost btn-sm" title="Log out">
+                <Icon name="logOut" size={16} /> Log out
               </button>
             </div>
+
+            <div className="room-greeting">
+              <h1>Welcome, {username}</h1>
+              <p>Start a new jam or hop into a friend's room.</p>
+            </div>
+
+            <button
+              className="btn btn-primary btn-lg btn-block"
+              onClick={handleCreateRoom}
+              disabled={!isConnected || isCreatingRoom || isJoiningRoom}
+            >
+              <Icon name="plus" size={18} />
+              {isCreatingRoom ? 'Creating…' : 'Start a new room'}
+            </button>
+
+            <div className="divider-text"><span>or join with a code</span></div>
+
+            <form
+              className="join-form"
+              onSubmit={(e) => { e.preventDefault(); handleJoinRoom(); }}
+            >
+              <input
+                type="text"
+                className="input code-input"
+                placeholder="ROOM CODE"
+                aria-label="Room code"
+                value={roomInput}
+                onChange={(e) => setRoomInput(e.target.value.toUpperCase())}
+                maxLength={8}
+                autoCapitalize="characters"
+                autoComplete="off"
+                spellCheck={false}
+                disabled={isJoiningRoom || isCreatingRoom}
+              />
+              <button
+                type="submit"
+                className="btn btn-secondary btn-lg"
+                disabled={!isConnected || isJoiningRoom || isCreatingRoom}
+              >
+                {isJoiningRoom ? 'Joining…' : 'Join'}
+              </button>
+            </form>
+
+            {roomError && <div className="alert alert-error">{roomError}</div>}
+            {!isConnected && (
+              <div className="alert alert-warning"><span className="spinner" /> Connecting to Jam server…</div>
+            )}
           </div>
+
+          {activeRooms.length > 0 && (
+            <section className="card active-rooms">
+              <h2>
+                <span className="live-dot" /> Live now
+                <span className="count-pill">{activeRooms.length}</span>
+              </h2>
+              <ul className="active-rooms-list">
+                {activeRooms.map(room => (
+                  <li key={room.id} className="active-room">
+                    <div className="active-room-info">
+                      <div className="active-room-head">
+                        <span className="active-room-code">{room.id}</span>
+                        <span className="active-room-meta">
+                          {room.hostName} &middot; {room.userCount} {room.userCount === 1 ? 'listener' : 'listeners'}
+                        </span>
+                      </div>
+                      {room.currentTrack && (
+                        <span className="active-room-track">
+                          {room.currentTrack.playing
+                            ? <span className="eq" aria-label="Playing"><span /><span /><span /></span>
+                            : <Icon name="pause" size={12} />}
+                          <span className="truncate">
+                            {room.currentTrack.title}{room.currentTrack.artist ? ` – ${room.currentTrack.artist}` : ''}
+                          </span>
+                        </span>
+                      )}
+                    </div>
+                    <button
+                      className="btn btn-secondary btn-sm"
+                      onClick={() => joinRoomById(room.id)}
+                      disabled={!isConnected || isJoiningRoom || isCreatingRoom}
+                    >
+                      Join
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
         </div>
 
-        <div className="geocities-footer">
-          <div className="marquee-container">
-            <span className="marquee-text">
-              ~*~ Welcome to the Navidrome Jam Music Lounge! Listen together with friends! ~*~
-            </span>
-          </div>
-          <a href="https://github.com/zhiganov/navidrome-jam" target="_blank" rel="noopener" className="github-badge">&#9733; Source Code on GitHub &#9733;</a>
-        </div>
+        {authFooter}
       </div>
     );
   }
 
+  const musicTabs = [
+    { id: 'browse', label: 'Library', icon: 'library' },
+    { id: 'search', label: 'Search', icon: 'search' },
+    { id: 'upload', label: 'Upload', icon: 'upload', className: 'desktop-only' },
+    { id: 'queue', label: 'Queue', icon: 'listMusic', count: queue.length, className: 'mobile-only' },
+    { id: 'people', label: 'People', icon: 'users', count: currentRoom.users?.length || 0, className: 'mobile-only' },
+  ];
+
+  const rootLabel = BROWSE_MODES.find(m => m.id === browseMode)?.label || 'Library';
+  const isDrilledIn = browseView === 'albums' || browseView === 'songs' || browseView === 'playlistSongs';
+  const albumArtist = selectedArtist?.name || selectedAlbum?.artist;
+
   // Main jam session screen
   return (
     <div className="app jam-screen">
-      <header>
-        <h1>Navidrome Jam</h1>
-        <div className="header-info">
-          <span>Room: {currentRoom.id}</span>
-          <span>{isHost ? 'HOST' : canControl ? 'CO-HOST' : 'LISTENER'}</span>
-          <span>{username}</span>
-          {communities.length > 0 && isHost ? (
-            <select
-              className="header-community-select"
-              value={currentRoom.community || ''}
-              onChange={(e) => {
-                localStorage.setItem('jam_community', e.target.value);
-                jamClient.updateCommunity(e.target.value);
-              }}
-            >
-              <option value="">No community</option>
-              {communities.map(c => (
-                <option key={c.id} value={c.id}>{c.name}</option>
-              ))}
-            </select>
-          ) : currentRoom.community && communities.length > 0 ? (
-            <span>{communities.find(c => c.id === currentRoom.community)?.name || currentRoom.community}</span>
-          ) : null}
+      <header className="app-header">
+        <div className="brand">
+          <Logo size={32} />
+          <span className="brand-name">Navidrome Jam</span>
         </div>
-        <button onClick={handleLeaveRoom} className="win98-btn leave-room-btn">
-          Leave Room
-        </button>
+
+        <div className="header-center">
+          <button className="room-code" onClick={handleCopyRoomCode} title="Copy room code">
+            <span className="room-code-label">Room</span>
+            <span className="room-code-value">{currentRoom.id}</span>
+            <Icon name={codeCopied ? 'check' : 'copy'} size={14} />
+          </button>
+          <span className={`role-pill role-${isHost ? 'host' : canControl ? 'cohost' : 'listener'}`}>
+            {roleLabel}
+          </span>
+        </div>
+
+        <div className="header-actions">
+          <span
+            className={`conn-dot${isConnected ? ' online' : ''}`}
+            title={isConnected ? 'Connected' : 'Disconnected'}
+            aria-label={isConnected ? 'Connected' : 'Disconnected'}
+          />
+          <span className="header-user">
+            <span className="avatar avatar-sm" style={{ '--hue': avatarHue(username) }}>
+              {(username || '?').charAt(0).toUpperCase()}
+            </span>
+            <span className="header-username">{username}</span>
+          </span>
+          <button onClick={handleLeaveRoom} className="btn btn-ghost btn-sm" title="Leave room">
+            <Icon name="logOut" size={16} />
+            <span className="hide-sm">Leave</span>
+          </button>
+        </div>
       </header>
 
       <div className="main-content">
-        {/* Left sidebar: Users */}
-        <aside className="users-panel">
-          <div className="panel-titlebar">
-            Users ({currentRoom.users?.length || 0})
+        {/* Left sidebar: People */}
+        <aside className="side-panel people-panel">
+          <div className="panel-header">
+            <Icon name="users" size={16} />
+            <h3>Listening</h3>
+            <span className="count-pill">{currentRoom.users?.length || 0}</span>
           </div>
           <div className="panel-body">
-            <ul className="users-list">
-              {currentRoom.users?.map((user) => {
-                const userIsHost = user.id === currentRoom.hostId;
-                const userIsCoHost = (currentRoom.coHosts || []).includes(user.id);
-                return (
-                  <li key={user.id} className={userIsHost ? 'host' : userIsCoHost ? 'cohost' : ''}>
-                    <span className="user-name">{user.username}</span>
-                    <span className="user-badges">
-                      {userIsHost && <span className="badge badge-host">HOST</span>}
-                      {userIsCoHost && <span className="badge badge-cohost">CO-HOST</span>}
-                      {isHost && !userIsHost && (
-                        userIsCoHost ? (
-                          <button
-                            className="user-action-btn demote-btn"
-                            onClick={() => jamClient.demoteCoHost(user.id)}
-                            title="Remove co-host"
-                          >
-                            &minus;
-                          </button>
-                        ) : (
-                          <button
-                            className="user-action-btn promote-btn"
-                            onClick={() => jamClient.promoteCoHost(user.id)}
-                            title="Make co-host"
-                          >
-                            +
-                          </button>
-                        )
-                      )}
-                    </span>
-                  </li>
-                );
-              })}
-            </ul>
+            {renderPeople()}
           </div>
         </aside>
 
-        {/* Center: Player and Search */}
-        <main className="player-panel">
-          <div className="panel-titlebar">
-            Now Playing
-          </div>
-          <div className="panel-body">
-            {isLoadingTrack && !currentTrack && (
-              <div className="loading-track">
-                <p>Loading track...</p>
-              </div>
-            )}
-
-            {currentTrack && (
-              <div className="now-playing">
-                {currentTrack.coverArt && (
-                  <img src={currentTrack.coverArt} alt="Album art" className="cover-art" />
-                )}
-                <div className="track-info">
-                  <h2>{currentTrack.title}</h2>
-                  <p>{currentTrack.artist}</p>
-                  <p className="album">{currentTrack.album}</p>
+        {/* Center: Player and Library */}
+        <main className="center-panel">
+          <section
+            className={`now-playing-card${currentTrack?.coverArt ? ' has-cover' : ''}`}
+            style={currentTrack?.coverArt ? { '--cover-url': `url("${currentTrack.coverArt}")` } : undefined}
+          >
+            {currentTrack ? (
+              <>
+                <div className="now-playing">
+                  {currentTrack.coverArt ? (
+                    <img src={currentTrack.coverArt} alt="Album art" className="cover-art" />
+                  ) : (
+                    <div className="cover-art cover-placeholder"><Icon name="music" size={40} /></div>
+                  )}
+                  <div className="track-info">
+                    <div className="track-eyebrow">
+                      {isPlaying
+                        ? <><span className="eq"><span /><span /><span /></span> Now playing</>
+                        : 'Paused'}
+                    </div>
+                    <h2 title={currentTrack.title}>{currentTrack.title}</h2>
+                    <p className="track-artist">{currentTrack.artist}</p>
+                    <p className="track-album">{currentTrack.album}</p>
+                  </div>
+                  <button
+                    className={`icon-btn like-btn${likeActive ? ' active' : ''}`}
+                    onClick={handleLike}
+                    title={likeActive ? 'Remove like' : 'Like this track'}
+                    aria-pressed={likeActive}
+                    aria-label={likeActive ? 'Remove like' : 'Like this track'}
+                  >
+                    <Icon name="heart" size={22} filled={likeActive} />
+                  </button>
                 </div>
-              </div>
-            )}
 
-            {currentTrack && (
-              <SyncedAudioPlayer
-                streamUrl={currentTrack.streamUrl}
-                jamClient={jamClient}
-                isHost={canControl}
-                isConnected={isConnected}
-                onPlaybackUpdate={handlePlaybackUpdate}
-                onEnded={handleTrackEnded}
-                audioRef={audioRef}
-                pendingSyncRef={pendingSyncRef}
-              />
-            )}
+                <SyncedAudioPlayer
+                  streamUrl={currentTrack.streamUrl}
+                  jamClient={jamClient}
+                  isHost={canControl}
+                  isConnected={isConnected}
+                  onPlaybackUpdate={handlePlaybackUpdate}
+                  onEnded={handleTrackEnded}
+                  audioRef={audioRef}
+                  pendingSyncRef={pendingSyncRef}
+                />
 
-            {currentTrack && (
-              <div className="transport-controls">
-                {canControl && (
-                  <>
+                {canControl ? (
+                  <div className="transport-controls">
+                    <button
+                      className="transport-btn"
+                      onClick={handleShuffleQueue}
+                      disabled={queue.length < 2}
+                      title="Shuffle queue"
+                      aria-label="Shuffle queue"
+                    >
+                      <Icon name="shuffle" size={20} />
+                    </button>
                     <button
                       className="transport-btn"
                       onClick={handlePrevTrack}
-                      disabled={!currentTrack}
-                      title={playHistory.length > 0 ? "Previous track" : "Restart track"}
+                      title={playHistory.length > 0 ? 'Previous track' : 'Restart track'}
+                      aria-label={playHistory.length > 0 ? 'Previous track' : 'Restart track'}
                     >
-                      <span className="transport-icon prev-icon"></span>
+                      <Icon name="skipBack" size={22} />
                     </button>
                     <button
                       className="transport-btn transport-play-btn"
                       onClick={handlePlayPause}
-                      disabled={!currentTrack}
+                      aria-label={isPlaying ? 'Pause' : 'Play'}
+                      title={isPlaying ? 'Pause' : 'Play'}
                     >
-                      {isPlaying
-                        ? <span className="transport-icon pause-icon"></span>
-                        : <span className="transport-icon play-icon"></span>
-                      }
+                      <Icon name={isPlaying ? 'pause' : 'play'} size={26} />
                     </button>
                     <button
                       className="transport-btn"
                       onClick={handleNextTrack}
-                      disabled={!currentTrack || queue.length === 0}
+                      disabled={queue.length === 0}
                       title="Next track"
+                      aria-label="Next track"
                     >
-                      <span className="transport-icon next-icon"></span>
+                      <Icon name="skipForward" size={22} />
                     </button>
                     <button
-                      className={`transport-btn repeat-btn${repeatMode ? ' repeat-active' : ''}`}
-                      onClick={() => {
-                        const next = !repeatMode;
-                        setRepeatMode(next);
-                        localStorage.setItem('jam_repeat', next ? 'on' : 'off');
-                      }}
-                      title={repeatMode ? 'Repeat: ON' : 'Repeat: OFF'}
+                      className={`transport-btn${repeatMode ? ' active' : ''}`}
+                      onClick={toggleRepeat}
+                      title={repeatMode ? 'Repeat: on' : 'Repeat: off'}
+                      aria-label="Repeat"
+                      aria-pressed={repeatMode}
                     >
-                      <span className="transport-icon repeat-icon"></span>
+                      <Icon name="repeat" size={20} />
                     </button>
-                    <button
-                      className="transport-btn shuffle-btn"
-                      onClick={handleShuffleQueue}
-                      disabled={queue.length < 2}
-                      title="Shuffle queue"
-                    >
-                      <span className="transport-icon shuffle-icon"></span>
-                    </button>
-                    <div className="transport-separator"></div>
-                  </>
+                  </div>
+                ) : (
+                  <p className="listener-note">The host is in control of playback — sit back and enjoy.</p>
                 )}
-                <button
-                  className={`transport-btn like-btn${likeActive ? ' active' : ''}`}
-                  onClick={handleLike}
-                  title={likeActive ? 'Remove like' : 'Like this track'}
-                >
-                  <span className="transport-icon like-icon"></span>
-                </button>
+              </>
+            ) : isLoadingTrack ? (
+              <div className="empty-state">
+                <span className="spinner spinner-lg" />
+                <p>Loading track…</p>
+              </div>
+            ) : (
+              <div className="empty-state">
+                <div className="empty-icon"><Icon name="music" size={32} /></div>
+                <p>Nothing playing yet</p>
+                <span>
+                  {canControl
+                    ? 'Pick a song from the library below to get the jam started.'
+                    : 'Waiting for the host to start the music.'}
+                </span>
               </div>
             )}
+          </section>
 
-            <hr className="retro-divider" />
+          <section className="library-card">
+            <nav className="tabs" role="tablist">
+              {musicTabs.map(tab => (
+                <button
+                  key={tab.id}
+                  role="tab"
+                  aria-selected={musicTab === tab.id}
+                  className={`tab${musicTab === tab.id ? ' active' : ''}${tab.className ? ` ${tab.className}` : ''}`}
+                  onClick={() => setMusicTab(tab.id)}
+                >
+                  <Icon name={tab.icon} size={16} />
+                  <span>{tab.label}</span>
+                  {tab.count !== undefined && <span className="tab-count">{tab.count}</span>}
+                </button>
+              ))}
+            </nav>
 
-            {/* Music tabs: Browse | Search | Queue (mobile) | People (mobile) */}
-            <div className="music-tabs">
-              <button
-                className={`auth-tab ${musicTab === 'browse' ? 'active' : ''}`}
-                onClick={() => setMusicTab('browse')}
-              >
-                Browse
-              </button>
-              <button
-                className={`auth-tab ${musicTab === 'search' ? 'active' : ''}`}
-                onClick={() => setMusicTab('search')}
-              >
-                Search
-              </button>
-              <button
-                className={`auth-tab desktop-tab ${musicTab === 'upload' ? 'active' : ''}`}
-                onClick={() => setMusicTab('upload')}
-              >
-                Upload
-              </button>
-              <button
-                className={`auth-tab mobile-tab ${musicTab === 'queue' ? 'active' : ''}`}
-                onClick={() => setMusicTab('queue')}
-              >
-                Queue ({queue.length})
-              </button>
-              <button
-                className={`auth-tab mobile-tab ${musicTab === 'people' ? 'active' : ''}`}
-                onClick={() => setMusicTab('people')}
-              >
-                People ({currentRoom.users?.length || 0})
-              </button>
-            </div>
-
-            <div className="music-tab-content">
+            <div className="tab-content">
               {musicTab === 'queue' ? (
-                <div className="mobile-queue-panel">
-                  <ul className="queue-list">
-                    {queue.map((track, index) => (
-                      <li key={`${track.id}-${index}`}>
-                        <div className="queue-track">
-                          <span className="queue-num">{index + 1}.</span>
-                          <div className="queue-track-info">
-                            <strong>{track.title}</strong>
-                            <span>{track.artist}</span>
-                          </div>
-                        </div>
-                        {canControl && (
-                          <div className="queue-controls">
-                            <button
-                              className="queue-ctrl-btn"
-                              onClick={() => {
-                                if (index === 0) return;
-                                const newQueue = [...queue];
-                                [newQueue[index - 1], newQueue[index]] = [newQueue[index], newQueue[index - 1]];
-                                jamClient.updateQueue(newQueue);
-                              }}
-                              disabled={index === 0}
-                              title="Move up"
-                            >
-                              &#9650;
-                            </button>
-                            <button
-                              className="queue-ctrl-btn"
-                              onClick={() => {
-                                if (index === queue.length - 1) return;
-                                const newQueue = [...queue];
-                                [newQueue[index], newQueue[index + 1]] = [newQueue[index + 1], newQueue[index]];
-                                jamClient.updateQueue(newQueue);
-                              }}
-                              disabled={index === queue.length - 1}
-                              title="Move down"
-                            >
-                              &#9660;
-                            </button>
-                            <button
-                              className="queue-ctrl-btn queue-remove-btn"
-                              onClick={() => {
-                                const newQueue = queue.filter((_, i) => i !== index);
-                                jamClient.updateQueue(newQueue);
-                              }}
-                              title="Remove"
-                            >
-                              &#10005;
-                            </button>
-                          </div>
-                        )}
-                      </li>
-                    ))}
-                    {queue.length === 0 && <li className="empty">Queue is empty</li>}
-                  </ul>
+                <div className="mobile-panel">
+                  {renderQueue()}
                 </div>
               ) : musicTab === 'people' ? (
-                <div className="mobile-users-panel">
-                  <ul className="users-list">
-                    {currentRoom.users?.map((user) => {
-                      const userIsHost = user.id === currentRoom.hostId;
-                      const userIsCoHost = (currentRoom.coHosts || []).includes(user.id);
-                      return (
-                        <li key={user.id} className={userIsHost ? 'host' : userIsCoHost ? 'cohost' : ''}>
-                          <span className="user-name">{user.username}</span>
-                          <span className="user-badges">
-                            {userIsHost && <span className="badge badge-host">HOST</span>}
-                            {userIsCoHost && <span className="badge badge-cohost">CO-HOST</span>}
-                            {isHost && !userIsHost && (
-                              userIsCoHost ? (
-                                <button
-                                  className="user-action-btn demote-btn"
-                                  onClick={() => jamClient.demoteCoHost(user.id)}
-                                  title="Remove co-host"
-                                >
-                                  &minus;
-                                </button>
-                              ) : (
-                                <button
-                                  className="user-action-btn promote-btn"
-                                  onClick={() => jamClient.promoteCoHost(user.id)}
-                                  title="Make co-host"
-                                >
-                                  +
-                                </button>
-                              )
-                            )}
-                          </span>
-                        </li>
-                      );
-                    })}
-                  </ul>
+                <div className="mobile-panel">
+                  {renderPeople()}
                 </div>
               ) : musicTab === 'upload' ? (
                 <div className="upload-panel">
-                  <div className="upload-zone-section">
-                    <div
-                      className={`upload-dropzone${isDragOver ? ' dragover' : ''}`}
-                      onDrop={handleDrop}
-                      onDragOver={handleDragOver}
-                      onDragLeave={handleDragLeave}
-                    >
-                      <div className="upload-dropzone-text">
-                        Drag &amp; drop audio files here
-                      </div>
-                      <div className="upload-or">- or -</div>
-                      <label className="win98-btn upload-browse-btn">
-                        Browse Files...
-                        <input
-                          type="file"
-                          accept=".mp3,.flac,.ogg,.opus,.m4a,.wav,.aac"
-                          onChange={handleFileSelect}
-                          style={{ display: 'none' }}
-                          multiple
-                        />
-                      </label>
-                      <div className="upload-formats">
-                        Formats: MP3, FLAC, OGG, OPUS, M4A, WAV, AAC (max 200MB each)
-                      </div>
-                    </div>
-
-                    {uploadQueue.length > 0 && (
-                      <div className="upload-queue-section">
-                        <div className="upload-queue-header">
-                          <strong>
-                            {(() => {
-                              const done = uploadQueue.filter(i => i.status === 'done').length;
-                              const total = uploadQueue.length;
-                              const hasActive = uploadQueue.some(i => i.status === 'uploading' || i.status === 'pending');
-                              return hasActive ? `Uploading ${done}/${total}...` : `${done}/${total} uploaded`;
-                            })()}
-                          </strong>
-                          {!uploadQueue.some(i => i.status === 'pending' || i.status === 'uploading') && (
-                            <button className="win98-btn upload-clear-btn" onClick={clearFinishedUploads}>Clear</button>
-                          )}
-                        </div>
-                        <ul className="upload-queue-list">
-                          {uploadQueue.map(item => (
-                            <li key={item.id} className={`upload-queue-item upload-queue-${item.status}`}>
-                              <span className="upload-queue-name" title={item.file.name}>{item.file.name}</span>
-                              {item.status === 'uploading' && (
-                                <div className="upload-progress-track upload-queue-progress">
-                                  <div className="upload-progress-fill" style={{ width: `${item.progress}%` }} />
-                                </div>
-                              )}
-                              {item.status === 'done' && <span className="upload-queue-status">Done</span>}
-                              {item.status === 'pending' && <span className="upload-queue-status">Queued</span>}
-                              {item.status === 'error' && <span className="upload-queue-status upload-queue-error">{item.error}</span>}
-                            </li>
-                          ))}
-                        </ul>
-                        {uploadQueue.every(i => i.status === 'done') && (
-                          <div className="upload-success">
-                            <small>Navidrome will index new files within ~1 minute. Then they will appear in search.</small>
-                          </div>
-                        )}
-                      </div>
-                    )}
+                  <div
+                    className={`dropzone${isDragOver ? ' dragover' : ''}`}
+                    onDrop={handleDrop}
+                    onDragOver={handleDragOver}
+                    onDragLeave={handleDragLeave}
+                  >
+                    <div className="dropzone-icon"><Icon name="upload" size={28} /></div>
+                    <p className="dropzone-title">Drag &amp; drop audio files here</p>
+                    <p className="dropzone-sub">or</p>
+                    <label className="btn btn-secondary">
+                      Browse files
+                      <input
+                        type="file"
+                        accept=".mp3,.flac,.ogg,.opus,.m4a,.wav,.aac"
+                        onChange={handleFileSelect}
+                        style={{ display: 'none' }}
+                        multiple
+                      />
+                    </label>
+                    <p className="dropzone-formats">
+                      MP3, FLAC, OGG, OPUS, M4A, WAV, AAC · up to 200 MB each
+                    </p>
                   </div>
 
-                  <hr className="retro-divider" />
+                  {uploadQueue.length > 0 && (
+                    <div className="upload-section">
+                      <div className="section-header">
+                        <h4>
+                          {(() => {
+                            const done = uploadQueue.filter(i => i.status === 'done').length;
+                            const total = uploadQueue.length;
+                            const hasActive = uploadQueue.some(i => i.status === 'uploading' || i.status === 'pending');
+                            return hasActive ? `Uploading ${done}/${total}…` : `${done}/${total} uploaded`;
+                          })()}
+                        </h4>
+                        {!uploadQueue.some(i => i.status === 'pending' || i.status === 'uploading') && (
+                          <button className="btn btn-ghost btn-sm" onClick={clearFinishedUploads}>Clear</button>
+                        )}
+                      </div>
+                      <ul className="upload-queue-list">
+                        {uploadQueue.map(item => (
+                          <li key={item.id} className={`upload-queue-item upload-queue-${item.status}`}>
+                            <span className="upload-queue-name" title={item.file.name}>{item.file.name}</span>
+                            {item.status === 'uploading' && (
+                              <div className="progress">
+                                <div className="progress-fill" style={{ width: `${item.progress}%` }} />
+                              </div>
+                            )}
+                            {item.status === 'done' && <span className="upload-queue-status"><Icon name="check" size={14} /> Done</span>}
+                            {item.status === 'pending' && <span className="upload-queue-status">Queued</span>}
+                            {item.status === 'error' && <span className="upload-queue-status">{item.error}</span>}
+                          </li>
+                        ))}
+                      </ul>
+                      {uploadQueue.every(i => i.status === 'done') && (
+                        <div className="alert alert-success">
+                          Navidrome will index new files within ~1 minute. Then they will appear in search.
+                        </div>
+                      )}
+                    </div>
+                  )}
 
-                  <div className="my-uploads-section">
-                    <div className="my-uploads-header">
-                      <strong>My Uploads</strong>
+                  <div className="upload-section">
+                    <div className="section-header">
+                      <h4>My uploads</h4>
                       <span className="upload-quota">
-                        Permanent: {uploadPermanentCount}/{uploadPermanentQuota}
+                        Permanent {uploadPermanentCount}/{uploadPermanentQuota}
                       </span>
                       <button
-                        className="win98-btn upload-refresh-btn"
+                        className="icon-btn icon-btn-sm"
                         onClick={fetchMyUploads}
                         disabled={isLoadingUploads}
+                        title="Refresh"
+                        aria-label="Refresh uploads"
                       >
-                        Refresh
+                        <Icon name="refresh" size={16} />
                       </button>
                     </div>
 
                     {isLoadingUploads ? (
-                      <div className="browse-loading">Loading uploads...</div>
+                      <div className="loading-state"><span className="spinner" /> Loading uploads…</div>
                     ) : myUploads.length === 0 ? (
-                      <div className="browse-empty">No uploads yet</div>
+                      <div className="empty-state small"><p>No uploads yet</p></div>
                     ) : (
                       <ul className="my-uploads-list">
                         {myUploads.map((upload) => (
                           <li key={upload.filename} className="upload-item">
-                            <div className="upload-item-info">
+                            <div className="row-info">
                               <strong>{upload.filename}</strong>
                               <span>{new Date(upload.uploadedAt).toLocaleDateString()}</span>
                             </div>
-                            <label className="upload-permanent-toggle" title={upload.permanent ? 'Marked permanent' : 'Will expire after 30 days'}>
+                            <label
+                              className="switch"
+                              title={upload.permanent ? 'Marked permanent' : 'Will expire after 30 days'}
+                            >
                               <input
                                 type="checkbox"
                                 checked={upload.permanent}
                                 onChange={() => handleTogglePermanent(upload.filename)}
                               />
-                              Keep
+                              <span className="switch-track" />
+                              <span className="switch-label">Keep</span>
                             </label>
                           </li>
                         ))}
@@ -1674,534 +1817,320 @@ function App() {
                 </div>
               ) : musicTab === 'search' ? (
                 <div className="search-panel">
-                  <form onSubmit={handleSearch}>
-                    <input
-                      type="text"
-                      className="win98-input"
-                      placeholder="Search songs, albums, artists..."
-                      value={searchQuery}
-                      onChange={(e) => setSearchQuery(e.target.value)}
-                      disabled={isSearching}
-                    />
-                    <button type="submit" className="win98-btn" disabled={isSearching}>
-                      {isSearching ? 'Searching...' : 'Search'}
+                  <form onSubmit={handleSearch} className="search-form">
+                    <div className="search-input-wrap">
+                      <Icon name="search" size={18} />
+                      <input
+                        type="search"
+                        className="input search-input"
+                        placeholder="Songs, albums, artists…"
+                        aria-label="Search"
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        disabled={isSearching}
+                      />
+                    </div>
+                    <button type="submit" className="btn btn-primary" disabled={isSearching}>
+                      {isSearching ? <span className="spinner" /> : 'Search'}
                     </button>
                   </form>
 
                   {searchResults && (
-                    <div className="search-results">
-                      {searchResults.searchResult3?.song?.length > 0 && (
-                        <div className="results-section">
-                          <h4>Songs</h4>
-                          <ul>
-                            {searchResults.searchResult3.song.map((song) => (
-                              <li key={song.id} className="song-item">
-                                <div className="song-info">
-                                  <strong>{song.title}</strong>
-                                  <span>{song.artist}</span>
-                                </div>
-                                <div className="song-actions">
-                                  {canControl && (
-                                    <>
-                                      <button onClick={() => handlePlayTrack(song)}>Play</button>
-                                      <button onClick={() => handleAddToQueue(song)}>Queue+</button>
-                                    </>
-                                  )}
-                                </div>
-                              </li>
-                            ))}
-                          </ul>
-                        </div>
-                      )}
-                    </div>
+                    searchResults.searchResult3?.song?.length > 0 ? (
+                      <div className="results-section">
+                        <h4 className="section-title">Songs</h4>
+                        <ul className="track-list">
+                          {searchResults.searchResult3.song.map((song) => renderTrackRow(song, {
+                            showThumb: true,
+                            meta: `${song.artist}${song.album ? ` · ${song.album}` : ''}`,
+                          }))}
+                        </ul>
+                      </div>
+                    ) : (
+                      <div className="empty-state small"><p>No songs found</p></div>
+                    )
                   )}
                 </div>
               ) : (
                 <div className="browse-panel">
-                  {/* Browse mode selector + breadcrumb */}
-                  <div className="browse-toolbar">
-                    <select
-                      className="browse-mode-select"
-                      value={browseMode}
-                      onChange={(e) => handleBrowseModeChange(e.target.value)}
-                    >
-                      <option value="favorites">&#9733; Favorites</option>
-                      <option value="playlists">Playlists</option>
-                      <option value="artists">Artists</option>
-                      <option value="albums">Albums A-Z</option>
-                      <option value="recent">Recently Added</option>
-                      <option value="played">Recently Played</option>
-                    </select>
-                  </div>
-                  <div className="browse-breadcrumb">
-                    <span
-                      className={(browseView === 'artists' || browseView === 'albumList' || browseView === 'favorites' || browseView === 'playlists') ? 'current' : 'clickable'}
-                      onClick={() => handleBrowseModeChange(browseMode)}
-                    >
-                      {browseMode === 'favorites' ? '★ Favorites' : browseMode === 'playlists' ? 'Playlists' : 'Library'}
-                    </span>
-                    {selectedPlaylist && (
-                      <>
-                        <span className="separator">&gt;</span>
-                        <span className="current">{selectedPlaylist.name}</span>
-                      </>
-                    )}
-                    {selectedArtist && (
-                      <>
-                        <span className="separator">&gt;</span>
-                        <span
-                          className={browseView === 'albums' ? 'current' : 'clickable'}
-                          onClick={() => { setBrowseView('albums'); setSelectedAlbum(null); }}
-                        >
-                          {selectedArtist.name}
-                        </span>
-                      </>
-                    )}
-                    {selectedAlbum && (
-                      <>
-                        <span className="separator">&gt;</span>
-                        <span className="current">{selectedAlbum.name}</span>
-                      </>
-                    )}
+                  <div className="chip-row">
+                    {BROWSE_MODES.map(mode => (
+                      <button
+                        key={mode.id}
+                        className={`chip${browseMode === mode.id ? ' active' : ''}`}
+                        onClick={() => handleBrowseModeChange(mode.id)}
+                      >
+                        {mode.id === 'favorites' && <Icon name="heart" size={14} filled={browseMode === 'favorites'} />}
+                        {mode.label}
+                      </button>
+                    ))}
                   </div>
 
+                  {isDrilledIn && (
+                    <div className="breadcrumb">
+                      <button className="icon-btn icon-btn-sm" onClick={handleBrowseBack} title="Back" aria-label="Back">
+                        <Icon name="chevronLeft" size={18} />
+                      </button>
+                      <button className="crumb" onClick={() => handleBrowseModeChange(browseMode)}>
+                        {rootLabel}
+                      </button>
+                      {selectedPlaylist && (
+                        <>
+                          <Icon name="chevronRight" size={14} className="crumb-sep" />
+                          <span className="crumb current">{selectedPlaylist.name}</span>
+                        </>
+                      )}
+                      {selectedArtist && (
+                        <>
+                          <Icon name="chevronRight" size={14} className="crumb-sep" />
+                          {browseView === 'albums' ? (
+                            <span className="crumb current">{selectedArtist.name}</span>
+                          ) : (
+                            <button className="crumb" onClick={() => { setBrowseView('albums'); setSelectedAlbum(null); }}>
+                              {selectedArtist.name}
+                            </button>
+                          )}
+                        </>
+                      )}
+                      {selectedAlbum && (
+                        <>
+                          <Icon name="chevronRight" size={14} className="crumb-sep" />
+                          <span className="crumb current">{selectedAlbum.name}</span>
+                        </>
+                      )}
+                    </div>
+                  )}
+
                   {isLoadingBrowse && (
-                    <div className="browse-loading">Loading...</div>
+                    <div className="loading-state"><span className="spinner" /> Loading…</div>
                   )}
 
                   {/* Artists list */}
                   {!isLoadingBrowse && browseView === 'artists' && (
-                    <div className="browse-list">
-                      {artists && artists.length > 0 ? (
-                        <ul>
-                          {artists.map((artist) => (
-                            <li
-                              key={artist.id}
-                              className="browse-item"
-                              onClick={() => handleBrowseArtist(artist)}
-                            >
-                              <span className="browse-icon folder-icon"></span>
-                              <div className="browse-item-info">
-                                <strong>{artist.name}</strong>
-                                <span>{artist.albumCount} album{artist.albumCount !== 1 ? 's' : ''}</span>
-                              </div>
-                            </li>
-                          ))}
-                        </ul>
-                      ) : (
-                        <div className="browse-empty">No artists found</div>
-                      )}
-                    </div>
+                    artists && artists.length > 0 ? (
+                      <ul className="list">
+                        {artists.map((artist) => (
+                          <li
+                            key={artist.id}
+                            className="list-row clickable"
+                            onClick={() => handleBrowseArtist(artist)}
+                            onKeyDown={onActivate(() => handleBrowseArtist(artist))}
+                            tabIndex={0}
+                            role="button"
+                          >
+                            <span className="avatar avatar-lg" style={{ '--hue': avatarHue(artist.name) }}>
+                              {(artist.name || '?').charAt(0).toUpperCase()}
+                            </span>
+                            <div className="row-info">
+                              <strong>{artist.name}</strong>
+                              <span>{artist.albumCount} album{artist.albumCount !== 1 ? 's' : ''}</span>
+                            </div>
+                            <Icon name="chevronRight" size={18} className="row-chevron" />
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <div className="empty-state small"><p>No artists found</p></div>
+                    )
                   )}
 
-                  {/* Album list view (Albums A-Z, Recent, Random) */}
-                  {!isLoadingBrowse && browseView === 'albumList' && (
-                    <div className="browse-list">
-                      {albumList && albumList.length > 0 ? (
-                        <ul>
-                          {albumList.map((album) => (
-                            <li
-                              key={album.id}
-                              className="browse-item album-item"
-                              onClick={() => handleBrowseAlbum(album)}
-                            >
-                              {album.coverArt ? (
-                                <img
-                                  src={navidrome.getCoverArtUrl(album.coverArt, 40)}
-                                  alt=""
-                                  className="browse-thumb"
-                                />
-                              ) : (
-                                <span className="browse-icon cd-icon"></span>
-                              )}
-                              <div className="browse-item-info">
-                                <strong>{album.name}</strong>
-                                <span>{album.artist}{album.year ? ` \u2022 ${album.year}` : ''}</span>
-                              </div>
-                            </li>
-                          ))}
-                        </ul>
-                      ) : (
-                        <div className="browse-empty">No albums found</div>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Albums list (artist drill-down) */}
-                  {!isLoadingBrowse && browseView === 'albums' && selectedArtist && (
-                    <div className="browse-list">
-                      <button className="win98-btn browse-back-btn" onClick={handleBrowseBack}>
-                        &lt; Back
-                      </button>
-                      {selectedArtist.albums.length > 0 ? (
-                        <ul>
-                          {selectedArtist.albums.map((album) => (
-                            <li
-                              key={album.id}
-                              className="browse-item album-item"
-                              onClick={() => handleBrowseAlbum(album)}
-                            >
-                              {album.coverArt ? (
-                                <img
-                                  src={navidrome.getCoverArtUrl(album.coverArt, 40)}
-                                  alt=""
-                                  className="browse-thumb"
-                                />
-                              ) : (
-                                <span className="browse-icon cd-icon"></span>
-                              )}
-                              <div className="browse-item-info">
-                                <strong>{album.name}</strong>
-                                <span>{album.year ? `${album.year} - ` : ''}{album.songCount} track{album.songCount !== 1 ? 's' : ''}</span>
-                              </div>
-                            </li>
-                          ))}
-                        </ul>
-                      ) : (
-                        <div className="browse-empty">No albums found</div>
-                      )}
-                    </div>
-                  )}
+                  {/* Album grid (Albums A-Z, Recent, Played, or artist drill-down) */}
+                  {!isLoadingBrowse && (browseView === 'albumList' || (browseView === 'albums' && selectedArtist)) && (() => {
+                    const albums = browseView === 'albums' ? selectedArtist.albums : albumList;
+                    return albums && albums.length > 0 ? (
+                      <div className="album-grid">
+                        {albums.map((album) => (
+                          <button
+                            key={album.id}
+                            className="album-card"
+                            onClick={() => handleBrowseAlbum(album)}
+                          >
+                            {renderCover(album.coverArt, 300, 'album-card-cover')}
+                            <strong title={album.name}>{album.name}</strong>
+                            <span>
+                              {browseView === 'albums'
+                                ? `${album.year ? `${album.year} · ` : ''}${album.songCount} track${album.songCount !== 1 ? 's' : ''}`
+                                : `${album.artist}${album.year ? ` · ${album.year}` : ''}`}
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="empty-state small"><p>No albums found</p></div>
+                    );
+                  })()}
 
                   {/* Songs list */}
                   {!isLoadingBrowse && browseView === 'songs' && selectedAlbum && (
-                    <div className="browse-list">
-                      <button className="win98-btn browse-back-btn" onClick={handleBrowseBack}>
-                        &lt; Back
-                      </button>
-
-                      <div className="browse-album-header">
-                        {selectedAlbum.coverArt && (
-                          <img
-                            src={navidrome.getCoverArtUrl(selectedAlbum.coverArt, 80)}
-                            alt=""
-                            className="browse-album-art"
-                          />
-                        )}
-                        <div className="browse-album-meta">
-                          <strong>{selectedAlbum.name}</strong>
-                          <span>{selectedArtist?.name}</span>
-                          {selectedAlbum.year && <span>{selectedAlbum.year}</span>}
+                    <>
+                      <div className="collection-header">
+                        {renderCover(selectedAlbum.coverArt, 300, 'collection-cover')}
+                        <div className="collection-meta">
+                          <span className="collection-kind">Album</span>
+                          <h3>{selectedAlbum.name}</h3>
+                          <span>
+                            {[albumArtist, selectedAlbum.year, `${selectedAlbum.songs.length} track${selectedAlbum.songs.length !== 1 ? 's' : ''}`]
+                              .filter(Boolean).join(' · ')}
+                          </span>
+                          {selectedAlbum.songs.length > 0 && renderCollectionActions(
+                            () => handlePlayPlaylist(selectedAlbum),
+                            () => handlePlayPlaylist(selectedAlbum, true),
+                            () => handleQueueAll(selectedAlbum.songs),
+                          )}
                         </div>
-                        {canControl && selectedAlbum.songs.length > 0 && (
-                          <button
-                            className="win98-btn browse-queue-all-btn"
-                            onClick={() => {
-                              const newItems = selectedAlbum.songs.map(song => ({
-                                id: song.id,
-                                title: song.title,
-                                artist: song.artist,
-                                album: song.album
-                              }));
-                              if (!currentTrack && newItems.length > 0) {
-                                const [first, ...rest] = newItems;
-                                jamClient.updateQueue([...queue, ...rest]);
-                                jamClient.play(first.id, 0);
-                                loadTrack(first.id);
-                              } else {
-                                jamClient.updateQueue([...queue, ...newItems]);
-                              }
-                            }}
-                          >
-                            Queue All
-                          </button>
-                        )}
                       </div>
 
                       {selectedAlbum.songs.length > 0 ? (
-                        <ul>
-                          {selectedAlbum.songs.map((song, index) => (
-                            <li key={song.id} className="song-item">
-                              <div className="song-info">
-                                <strong>
-                                  <span className="track-num">{song.track || index + 1}.</span>
-                                  {song.title}
-                                </strong>
-                                <span>
-                                  {song.artist && song.artist !== selectedArtist?.name && (
-                                    <span className="song-artist-name">{song.artist} &middot; </span>
-                                  )}
-                                  {formatDuration(song.duration)}
-                                </span>
-                              </div>
-                              <div className="song-actions">
-                                {canControl && (
-                                  <>
-                                    <button onClick={() => handlePlayTrack(song, selectedAlbum.songs)}>Play</button>
-                                    <button onClick={() => handleAddToQueue(song)}>Queue+</button>
-                                  </>
-                                )}
-                              </div>
-                            </li>
-                          ))}
+                        <ul className="track-list">
+                          {selectedAlbum.songs.map((song, index) => renderTrackRow(song, {
+                            index: song.track || index + 1,
+                            contextSongs: selectedAlbum.songs,
+                            meta: song.artist && song.artist !== albumArtist ? song.artist : null,
+                          }))}
                         </ul>
                       ) : (
-                        <div className="browse-empty">No tracks found</div>
+                        <div className="empty-state small"><p>No tracks found</p></div>
                       )}
-
-                    </div>
+                    </>
                   )}
 
                   {/* Playlists list */}
                   {!isLoadingBrowse && browseView === 'playlists' && (
-                    <div className="browse-list">
-                      {playlists && playlists.length > 0 ? (
-                        <ul>
-                          {playlists.map((playlist) => (
-                            <li
-                              key={playlist.id}
-                              className="browse-item"
-                              onClick={() => handleBrowsePlaylist(playlist)}
-                            >
-                              <span className="browse-icon folder-icon"></span>
-                              <div className="browse-item-info">
-                                <strong>{playlist.name}</strong>
-                                <span>{playlist.songCount} track{playlist.songCount !== 1 ? 's' : ''}</span>
+                    playlists && playlists.length > 0 ? (
+                      <ul className="list">
+                        {playlists.map((playlist) => (
+                          <li
+                            key={playlist.id}
+                            className="list-row clickable"
+                            onClick={() => handleBrowsePlaylist(playlist)}
+                            onKeyDown={onActivate(() => handleBrowsePlaylist(playlist))}
+                            tabIndex={0}
+                            role="button"
+                          >
+                            <span className="tile-icon"><Icon name="listMusic" size={20} /></span>
+                            <div className="row-info">
+                              <strong>{playlist.name}</strong>
+                              <span>{playlist.songCount} track{playlist.songCount !== 1 ? 's' : ''}</span>
+                            </div>
+                            {canControl && playlist.songCount > 0 && (
+                              <div className="song-actions">
+                                <button
+                                  className="icon-btn"
+                                  onClick={(e) => { e.stopPropagation(); handlePlayPlaylist(playlist); }}
+                                  title="Play"
+                                  aria-label={`Play ${playlist.name}`}
+                                >
+                                  <Icon name="play" size={16} />
+                                </button>
+                                <button
+                                  className="icon-btn"
+                                  onClick={(e) => { e.stopPropagation(); handlePlayPlaylist(playlist, true); }}
+                                  title="Shuffle"
+                                  aria-label={`Shuffle ${playlist.name}`}
+                                >
+                                  <Icon name="shuffle" size={16} />
+                                </button>
                               </div>
-                              {canControl && playlist.songCount > 0 && (
-                                <div className="song-actions browse-item-actions">
-                                  <button onClick={(e) => { e.stopPropagation(); handlePlayPlaylist(playlist); }}>Play</button>
-                                  <button onClick={(e) => { e.stopPropagation(); handlePlayPlaylist(playlist, true); }}>Shuffle</button>
-                                </div>
-                              )}
-                            </li>
-                          ))}
-                        </ul>
-                      ) : (
-                        <div className="browse-empty">No playlists found</div>
-                      )}
-                    </div>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <div className="empty-state small"><p>No playlists found</p></div>
+                    )
                   )}
 
                   {/* Playlist songs */}
                   {!isLoadingBrowse && browseView === 'playlistSongs' && selectedPlaylist && (
-                    <div className="browse-list">
-                      <button className="win98-btn browse-back-btn" onClick={handleBrowseBack}>
-                        &lt; Back
-                      </button>
-                      <div className="favorites-header">
-                        <span className="favorites-count">{selectedPlaylist.name} &middot; {selectedPlaylist.songs.length} track{selectedPlaylist.songs.length !== 1 ? 's' : ''}</span>
-                        {canControl && selectedPlaylist.songs.length > 0 && (
-                          <div className="favorites-header-actions">
-                          <button
-                            className="win98-btn"
-                            style={{ fontSize: 10, padding: '2px 8px' }}
-                            onClick={() => handlePlayPlaylist(selectedPlaylist)}
-                          >
-                            Play All
-                          </button>
-                          <button
-                            className="win98-btn"
-                            style={{ fontSize: 10, padding: '2px 8px' }}
-                            onClick={() => handlePlayPlaylist(selectedPlaylist, true)}
-                          >
-                            Shuffle
-                          </button>
-                          <button
-                            className="win98-btn"
-                            style={{ fontSize: 10, padding: '2px 8px' }}
-                            onClick={() => {
-                              const items = selectedPlaylist.songs.map(s => ({ id: s.id, title: s.title, artist: s.artist, album: s.album }));
-                              if (!currentTrack && items.length > 0) {
-                                const [first, ...rest] = items;
-                                jamClient.updateQueue([...queue, ...rest]);
-                                jamClient.play(first.id, 0);
-                                loadTrack(first.id);
-                              } else {
-                                jamClient.updateQueue([...queue, ...items]);
-                              }
-                            }}
-                          >
-                            Queue All
-                          </button>
-                          </div>
-                        )}
+                    <>
+                      <div className="collection-header">
+                        <div className="collection-cover tile-icon tile-icon-lg"><Icon name="listMusic" size={40} /></div>
+                        <div className="collection-meta">
+                          <span className="collection-kind">Playlist</span>
+                          <h3>{selectedPlaylist.name}</h3>
+                          <span>{selectedPlaylist.songs.length} track{selectedPlaylist.songs.length !== 1 ? 's' : ''}</span>
+                          {selectedPlaylist.songs.length > 0 && renderCollectionActions(
+                            () => handlePlayPlaylist(selectedPlaylist),
+                            () => handlePlayPlaylist(selectedPlaylist, true),
+                            () => handleQueueAll(selectedPlaylist.songs),
+                          )}
+                        </div>
                       </div>
                       {selectedPlaylist.songs.length > 0 ? (
-                        <ul>
-                          {selectedPlaylist.songs.map((song, index) => (
-                            <li key={song.id} className="song-item">
-                              <div className="song-info">
-                                <strong>
-                                  <span className="track-num">{index + 1}.</span>
-                                  {song.title}
-                                </strong>
-                                <span>{song.artist} &middot; {song.album}{song.duration ? ` \u00B7 ${formatDuration(song.duration)}` : ''}</span>
-                              </div>
-                              <div className="song-actions">
-                                {canControl && (
-                                  <>
-                                    <button onClick={() => handlePlayTrack(song, selectedPlaylist.songs)}>Play</button>
-                                    <button onClick={() => handleAddToQueue(song)}>Queue+</button>
-                                  </>
-                                )}
-                              </div>
-                            </li>
-                          ))}
+                        <ul className="track-list">
+                          {selectedPlaylist.songs.map((song, index) => renderTrackRow(song, {
+                            index: index + 1,
+                            contextSongs: selectedPlaylist.songs,
+                            meta: `${song.artist} · ${song.album}`,
+                          }))}
                         </ul>
                       ) : (
-                        <div className="browse-empty">Playlist is empty</div>
+                        <div className="empty-state small"><p>Playlist is empty</p></div>
                       )}
-                    </div>
+                    </>
                   )}
 
                   {/* Favorites list */}
                   {!isLoadingBrowse && browseView === 'favorites' && (
-                    <div className="browse-list favorites-list">
-                      {favorites && favorites.length > 0 ? (
-                        <>
-                          <div className="favorites-header">
-                            <span className="favorites-count">{favorites.length} starred track{favorites.length !== 1 ? 's' : ''}</span>
-                            {canControl && (
-                              <button
-                                className="win98-btn"
-                                style={{ fontSize: 10, padding: '2px 8px' }}
-                                onClick={() => {
-                                  const items = favorites.map(s => ({ id: s.id, title: s.title, artist: s.artist, album: s.album }));
-                                  if (!currentTrack && items.length > 0) {
-                                    const [first, ...rest] = items;
-                                    jamClient.updateQueue([...queue, ...rest]);
-                                    jamClient.play(first.id, 0);
-                                    loadTrack(first.id);
-                                  } else {
-                                    jamClient.updateQueue([...queue, ...items]);
-                                  }
-                                }}
-                              >
-                                Queue All
-                              </button>
-                            )}
-                          </div>
-                          <ul>
-                            {favorites.map((song) => (
-                              <li key={song.id} className="song-item">
-                                <div className="song-info">
-                                  <strong>{song.title}</strong>
-                                  <span>{song.artist} &middot; {song.album}{song.duration ? ` \u00B7 ${formatDuration(song.duration)}` : ''}</span>
-                                </div>
-                                <div className="song-actions">
-                                  {canControl && (
-                                    <>
-                                      <button onClick={() => handlePlayTrack(song)}>Play</button>
-                                      <button onClick={() => handleAddToQueue(song)}>Queue+</button>
-                                    </>
-                                  )}
-                                </div>
-                              </li>
-                            ))}
-                          </ul>
-                        </>
-                      ) : (
-                        <div className="browse-empty favorites-empty">
-                          <span className="favorites-empty-star">&#9734;</span>
-                          <p>No favorites yet</p>
-                          <p className="favorites-hint">Like a track during playback to add it here</p>
+                    favorites && favorites.length > 0 ? (
+                      <>
+                        <div className="section-header">
+                          <h4>{favorites.length} liked track{favorites.length !== 1 ? 's' : ''}</h4>
+                          {renderCollectionActions(null, null, () => handleQueueAll(favorites))}
                         </div>
-                      )}
-                    </div>
+                        <ul className="track-list">
+                          {favorites.map((song) => renderTrackRow(song, {
+                            showThumb: true,
+                            meta: `${song.artist} · ${song.album}`,
+                          }))}
+                        </ul>
+                      </>
+                    ) : (
+                      <div className="empty-state">
+                        <div className="empty-icon"><Icon name="heart" size={28} /></div>
+                        <p>No liked tracks yet</p>
+                        <span>Tap the heart during playback to save a track here.</span>
+                      </div>
+                    )
                   )}
                 </div>
               )}
             </div>
-          </div>
+          </section>
         </main>
 
         {/* Right sidebar: Queue */}
-        <aside className="queue-panel">
-          <div className="panel-titlebar">
-            Queue ({queue.length})
+        <aside className="side-panel queue-panel">
+          <div className="panel-header">
+            <Icon name="listMusic" size={16} />
+            <h3>Up next</h3>
+            <span className="count-pill">{queue.length}</span>
           </div>
           <div className="panel-body">
-            <ul className="queue-list">
-              {queue.map((track, index) => (
-                <li key={`${track.id}-${index}`}>
-                  <div className="queue-track">
-                    <span className="queue-num">{index + 1}.</span>
-                    <div className="queue-track-info">
-                      <strong>{track.title}</strong>
-                      <span>{track.artist}</span>
-                    </div>
-                  </div>
-                  {canControl && (
-                    <div className="queue-controls">
-                      <button
-                        className="queue-ctrl-btn"
-                        onClick={() => {
-                          if (index === 0) return;
-                          const newQueue = [...queue];
-                          [newQueue[index - 1], newQueue[index]] = [newQueue[index], newQueue[index - 1]];
-                          jamClient.updateQueue(newQueue);
-                        }}
-                        disabled={index === 0}
-                        title="Move up"
-                      >
-                        &#9650;
-                      </button>
-                      <button
-                        className="queue-ctrl-btn"
-                        onClick={() => {
-                          if (index === queue.length - 1) return;
-                          const newQueue = [...queue];
-                          [newQueue[index], newQueue[index + 1]] = [newQueue[index + 1], newQueue[index]];
-                          jamClient.updateQueue(newQueue);
-                        }}
-                        disabled={index === queue.length - 1}
-                        title="Move down"
-                      >
-                        &#9660;
-                      </button>
-                      <button
-                        className="queue-ctrl-btn queue-remove-btn"
-                        onClick={() => {
-                          const newQueue = queue.filter((_, i) => i !== index);
-                          jamClient.updateQueue(newQueue);
-                        }}
-                        title="Remove"
-                      >
-                        &#10005;
-                      </button>
-                    </div>
-                  )}
-                </li>
-              ))}
-              {queue.length === 0 && <li className="empty">Queue is empty</li>}
-            </ul>
+            {renderQueue()}
           </div>
         </aside>
       </div>
-
-      {communities.length > 0 && isHost && (
-        <div className="mobile-community-bar">
-          <label>Community:</label>
-          <select
-            className="mobile-community-select"
-            value={currentRoom.community || ''}
-            onChange={(e) => {
-              localStorage.setItem('jam_community', e.target.value);
-              jamClient.updateCommunity(e.target.value);
-            }}
-          >
-            <option value="">None</option>
-            {communities.map(c => (
-              <option key={c.id} value={c.id}>{c.name}</option>
-            ))}
-          </select>
-        </div>
-      )}
-
-      <div className="status-bar">
-        <div className="status-bar-section">
-          {currentTrack ? `Playing: ${currentTrack.title} - ${currentTrack.artist}` : 'Ready'}
-        </div>
-        <div className="status-bar-section">
-          {isConnected ? 'Connected' : 'Disconnected'}
-        </div>
-        <div className="status-bar-section">
-          {isHost ? 'HOST' : canControl ? 'CO-HOST' : 'LISTENER'}
-        </div>
-      </div>
     </div>
   );
+}
+
+const BROWSE_MODES = [
+  { id: 'favorites', label: 'Liked' },
+  { id: 'playlists', label: 'Playlists' },
+  { id: 'artists', label: 'Artists' },
+  { id: 'albums', label: 'Albums' },
+  { id: 'recent', label: 'Recently added' },
+  { id: 'played', label: 'Recently played' },
+];
+
+// Stable hue per name for avatar colors
+function avatarHue(name = '') {
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) {
+    hash = (hash * 31 + name.charCodeAt(i)) % 360;
+  }
+  return hash;
 }
 
 // Fisher-Yates shuffle, returns a new array

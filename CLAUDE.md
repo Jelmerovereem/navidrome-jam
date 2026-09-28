@@ -64,7 +64,7 @@ Three screens in `App.jsx`: Login → Room Selection → Jam Session.
 
 Service layer: `navidrome.js` (Subsonic API + MD5 auth), `jamClient.js` (Socket.io wrapper with custom event emitter), `NavidromeContext.jsx`/`JamContext.jsx` (create/destroy on mount/unmount — prevents duplicate listeners during Vite HMR).
 
-**Visual theme**: Windows 98 / GeoCities. CSS variables (`--win-bg`, `--win-light`, `--win-dark`, `--titlebar-*`). Transport icons via CSS borders; repeat/like via SVG `mask-image` data URIs.
+**Visual theme**: Modern dark UI (Inter, violet→pink accent). Design tokens as CSS variables in `App.css` (`--bg`, `--surface*`, `--text*`, `--accent*`, `--radius*`). Icons are inline SVGs in `components/Icons.jsx`. Responsive: 3 columns >1024px; single column with Queue/People tabs below.
 
 ## Deployment
 

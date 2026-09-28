@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { Icon } from './Icons';
 
 const DRIFT_THRESHOLD = 0.5; // seconds
 const HEARTBEAT_INTERVAL = 2000; // ms
@@ -168,42 +169,38 @@ export default function SyncedAudioPlayer({
         preload="auto"
       />
 
-      <div className="playback-info">
-        <div className="time">
-          {formatTime(currentTime)} / {formatTime(duration)}
-        </div>
-        <div className="status">
-          {isPlaying ? '> Playing' : '|| Paused'}
-        </div>
+      <div className="seek-row">
+        <span className="time">{formatTime(currentTime)}</span>
+        <input
+          type="range"
+          min="0"
+          max={duration || 0}
+          step="any"
+          value={currentTime}
+          onChange={(e) => {
+            const newPosition = parseFloat(e.target.value);
+            const audio = audioRef.current;
+
+            if (audio) {
+              audio.currentTime = newPosition;
+
+              // If host, emit seek event to sync with other users
+              if (isHost && jamClient) {
+                jamClient.seek(newPosition);
+              }
+            }
+          }}
+          className="range seek-bar"
+          style={{ '--progress': `${duration ? (currentTime / duration) * 100 : 0}%` }}
+          disabled={!isHost}
+          title={isHost ? 'Drag to seek' : 'Only the host can seek'}
+          aria-label="Seek"
+        />
+        <span className="time">{formatTime(duration)}</span>
       </div>
 
-      <input
-        type="range"
-        min="0"
-        max={duration || 0}
-        value={currentTime}
-        onChange={(e) => {
-          const newPosition = parseFloat(e.target.value);
-          const audio = audioRef.current;
-
-          if (audio) {
-            audio.currentTime = newPosition;
-
-            // If host, emit seek event to sync with other users
-            if (isHost && jamClient) {
-              jamClient.seek(newPosition);
-            }
-          }
-        }}
-        className="seek-bar"
-        disabled={!isHost}
-        title={isHost ? 'Drag to seek' : 'Only host can seek'}
-      />
-
       <div className="volume-control">
-        <label htmlFor="volume-slider">
-          Vol: {Math.round(volume * 100)}%
-        </label>
+        <Icon name={volume === 0 ? 'volumeOff' : 'volume'} size={18} />
         <input
           id="volume-slider"
           type="range"
@@ -217,9 +214,13 @@ export default function SyncedAudioPlayer({
             // Save to localStorage for persistence
             localStorage.setItem('audio_volume', newVolume.toString());
           }}
-          className="volume-slider"
+          className="range volume-slider"
+          style={{ '--progress': `${volume * 100}%` }}
           title={`Volume: ${Math.round(volume * 100)}%`}
+          aria-label="Volume"
         />
+        <span className="volume-value">{Math.round(volume * 100)}%</span>
+        <span className="sr-only" aria-live="polite">{isPlaying ? 'Playing' : 'Paused'}</span>
       </div>
     </div>
   );
