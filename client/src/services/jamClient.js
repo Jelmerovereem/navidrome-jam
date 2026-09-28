@@ -144,6 +144,11 @@ class JamClient {
       this.emit('user-left', { userId, room, newHost });
     });
 
+    // Room changed without a join/leave (e.g. someone's connection dropped)
+    this.socket.on('room-updated', ({ room }) => {
+      this.emit('room-updated', room);
+    });
+
     this.socket.on('queue-updated', ({ queue }) => {
       console.log('Queue updated:', queue.length, 'tracks');
       this.emit('queue-updated', queue);

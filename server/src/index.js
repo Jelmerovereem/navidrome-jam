@@ -70,6 +70,8 @@ const MAX_WAITLIST_MESSAGE_LENGTH = 500;
 const DEFAULT_PORT = 3001;
 const CLEANUP_INTERVAL_MS = 60 * 1000;
 const ROOM_SNAPSHOT_INTERVAL_MS = 30 * 1000; // Snapshot room state every 30s
+// How long a dropped user (locked phone, network switch) keeps their spot and role
+const USER_RECONNECT_GRACE_MS = 30 * 1000;
 const UPLOAD_CLEANUP_DELAY_MS = 10 * 1000;
 const UPLOAD_CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const COMMUNITIES_CACHE_TTL_MS = 60 * 60 * 1000;
@@ -2042,6 +2044,38 @@ function serializeRoom(room) {
   return { ...room, pawHolders: Array.from(room.pawHolders) };
 }
 
+// Users whose socket dropped, pending removal: `${roomId}:${userId}` -> timeout
+const pendingRemovals = new Map();
+
+function cancelPendingRemoval(roomId, userId) {
+  const key = `${roomId}:${userId}`;
+  if (pendingRemovals.has(key)) {
+    clearTimeout(pendingRemovals.get(key));
+    pendingRemovals.delete(key);
+  }
+}
+
+// Remove a user and tell the rest of the room (host is reassigned if needed)
+function removeUserAndNotify(roomId, userId) {
+  const room = roomManager.getRoom(roomId);
+  const wasHost = room?.hostId === userId;
+
+  roomManager.removeUser(roomId, userId);
+
+  const updatedRoom = roomManager.getRoom(roomId);
+  if (updatedRoom && updatedRoom.users.length > 0) {
+    io.to(roomId).emit('user-left', {
+      userId,
+      room: serializeRoom(updatedRoom),
+      newHost: wasHost ? updatedRoom.hostId : null
+    });
+  } else if (updatedRoom) {
+    console.log(`Room ${roomId} is empty, grace period started`);
+  } else {
+    console.log(`Room ${roomId} deleted (empty)`);
+  }
+}
+
 // WebSocket connection handling
 io.on('connection', (socket) => {
   console.log(`Client connected: ${socket.id}`);
@@ -2079,6 +2113,9 @@ io.on('connection', (socket) => {
         socket.leave(socket.data.roomId);
         roomManager.removeUser(socket.data.roomId, socket.data.userId);
       }
+
+      // Returning within the reconnect grace period — keep their spot and role
+      cancelPendingRemoval(roomId, userId);
 
       // Join new room
       socket.join(roomId);
@@ -2438,26 +2475,9 @@ io.on('connection', (socket) => {
   socket.on('leave-room', () => {
     if (socket.data.roomId && socket.data.userId) {
       try {
-        const room = roomManager.getRoom(socket.data.roomId);
-        const wasHost = room?.hostId === socket.data.userId;
-
         socket.leave(socket.data.roomId);
-        roomManager.removeUser(socket.data.roomId, socket.data.userId);
-
-        const updatedRoom = roomManager.getRoom(socket.data.roomId);
-
-        if (updatedRoom && updatedRoom.users.length > 0) {
-          // Notify remaining users
-          io.to(socket.data.roomId).emit('user-left', {
-            userId: socket.data.userId,
-            room: serializeRoom(updatedRoom),
-            newHost: wasHost ? updatedRoom.hostId : null
-          });
-        } else if (updatedRoom) {
-          console.log(`Room ${socket.data.roomId} is empty, grace period started`);
-        } else {
-          console.log(`Room ${socket.data.roomId} deleted (empty)`);
-        }
+        cancelPendingRemoval(socket.data.roomId, socket.data.userId);
+        removeUserAndNotify(socket.data.roomId, socket.data.userId);
 
         console.log(`User ${socket.data.userId} left room ${socket.data.roomId}`);
         socket.data.roomId = null;
@@ -2478,34 +2498,37 @@ io.on('connection', (socket) => {
   });
 
   // Disconnect handling
+  // Disconnects are often temporary (locked phone, network switch), so keep the
+  // user — and their host/co-host role — for a short grace period before removing
   socket.on('disconnect', () => {
     console.log(`Client disconnected: ${socket.id}`);
 
-    if (socket.data.roomId && socket.data.userId) {
-      try {
-        const room = roomManager.getRoom(socket.data.roomId);
-        const wasHost = room?.hostId === socket.data.userId;
+    const { roomId, userId } = socket.data;
+    if (!roomId || !userId) return;
 
-        roomManager.removeUser(socket.data.roomId, socket.data.userId);
-
-        const updatedRoom = roomManager.getRoom(socket.data.roomId);
-
-        if (updatedRoom && updatedRoom.users.length > 0) {
-          // Notify remaining users
-          io.to(socket.data.roomId).emit('user-left', {
-            userId: socket.data.userId,
-            room: serializeRoom(updatedRoom),
-            newHost: wasHost ? updatedRoom.hostId : null
-          });
-        } else if (updatedRoom) {
-          // Room is empty but kept alive (grace period)
-          console.log(`Room ${socket.data.roomId} is empty, grace period started`);
-        } else {
-          console.log(`Room ${socket.data.roomId} deleted (empty)`);
-        }
-      } catch (error) {
-        console.error('Error handling disconnect:', error);
+    try {
+      if (!roomManager.markDisconnected(roomId, userId, socket.id)) {
+        return; // already rejoined on a newer connection
       }
+
+      const room = roomManager.getRoom(roomId);
+      socket.to(roomId).emit('room-updated', { room: serializeRoom(room) });
+
+      cancelPendingRemoval(roomId, userId);
+      const key = `${roomId}:${userId}`;
+      pendingRemovals.set(key, setTimeout(() => {
+        pendingRemovals.delete(key);
+        try {
+          // Rejoined in the meantime (possibly on another socket)
+          if (!roomManager.isCurrentSocket(roomId, userId, socket.id)) return;
+          console.log(`User ${userId} did not reconnect within ${USER_RECONNECT_GRACE_MS / 1000}s, removing from room ${roomId}`);
+          removeUserAndNotify(roomId, userId);
+        } catch (error) {
+          console.error('Error removing disconnected user:', error);
+        }
+      }, USER_RECONNECT_GRACE_MS));
+    } catch (error) {
+      console.error('Error handling disconnect:', error);
     }
   });
 });

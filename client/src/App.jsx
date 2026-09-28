@@ -148,6 +148,10 @@ function App() {
       setCurrentRoom(room);
     };
 
+    const handleRoomUpdated = (room) => {
+      setCurrentRoom(room);
+    };
+
     const handleUserLeft = ({ room, newHost }) => {
       setCurrentRoom(room);
       const cohost = (room.coHosts || []).includes(jamClient.userId);
@@ -212,6 +216,7 @@ function App() {
     jamClient.on('error', handleError);
     jamClient.on('disconnected', handleDisconnected);
     jamClient.on('connected', handleConnected);
+    jamClient.on('room-updated', handleRoomUpdated);
     jamClient.on('room-lost', handleRoomLost);
     jamClient.on('track-reactions', handleTrackReactions);
 
@@ -225,6 +230,7 @@ function App() {
       jamClient.off('error', handleError);
       jamClient.off('disconnected', handleDisconnected);
       jamClient.off('connected', handleConnected);
+      jamClient.off('room-updated', handleRoomUpdated);
       jamClient.off('room-lost', handleRoomLost);
       jamClient.off('track-reactions', handleTrackReactions);
       jamClient.disconnect();
@@ -1222,13 +1228,14 @@ function App() {
           const userIsHost = user.id === currentRoom.hostId;
           const userIsCoHost = (currentRoom.coHosts || []).includes(user.id);
           return (
-            <li key={user.id} className="person">
+            <li key={user.id} className={`person${user.disconnectedAt ? ' is-away' : ''}`}>
               <span className="avatar" style={{ '--hue': avatarHue(user.username) }}>
                 {(user.username || '?').charAt(0).toUpperCase()}
               </span>
               <span className="person-name">
                 {user.username}
                 {user.id === jamClient.userId && <span className="you-tag">you</span>}
+                {user.disconnectedAt && <span className="you-tag">reconnecting…</span>}
               </span>
               {userIsHost && <span className="role-badge role-host"><Icon name="crown" size={12} /> Host</span>}
               {userIsCoHost && <span className="role-badge role-cohost">Co-host</span>}

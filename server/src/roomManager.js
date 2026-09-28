@@ -118,6 +118,8 @@ export class RoomManager {
         position: room.users[existingUserIndex].position, // Keep their position
         lastHeartbeat: Date.now()
       };
+      // Back from a dropped connection — roles (host/co-host) are untouched
+      delete room.users[existingUserIndex].disconnectedAt;
       console.log(`Updated existing user in room ${roomId}: ${user.username}`);
       return user;
     }
@@ -143,6 +145,27 @@ export class RoomManager {
     });
 
     return user;
+  }
+
+  /**
+   * Flag a user whose socket dropped, without removing them (they may reconnect).
+   * Only applies if `socketId` is still their current socket — a newer
+   * connection from the same user means they're already back.
+   * @returns {boolean} whether the user was marked
+   */
+  markDisconnected(roomId, userId, socketId) {
+    const user = this.rooms.get(roomId)?.users.find(u => u.id === userId);
+    if (!user || user.socketId !== socketId) return false;
+    user.disconnectedAt = Date.now();
+    return true;
+  }
+
+  /**
+   * Whether `socketId` is still the user's current connection in the room
+   */
+  isCurrentSocket(roomId, userId, socketId) {
+    const user = this.rooms.get(roomId)?.users.find(u => u.id === userId);
+    return !!user && user.socketId === socketId;
   }
 
   /**

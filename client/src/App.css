@@ -1296,6 +1296,11 @@ button {
   background: var(--surface-hover);
 }
 
+.person.is-away .avatar,
+.person.is-away .person-name {
+  opacity: 0.5;
+}
+
 .person-name {
   flex: 1;
   min-width: 0;

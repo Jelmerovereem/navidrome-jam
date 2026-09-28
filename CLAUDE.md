@@ -57,7 +57,7 @@ No automated tests — manual testing with test-client.html or full stack.
 ### Server (`server/src/`)
 Three files: `index.js` (Express + Socket.io, REST endpoints, WebSocket handlers, admin panel), `roomManager.js` (room state with grace periods), `sftpUploader.js` (SFTP upload pipeline to the Navidrome music folder).
 
-Key design: room state snapshots to the data volume every 30s + SIGTERM, 5-min grace period for empty rooms, invite codes/waitlist/deleted codes persist to JSON on volume, `canControl()` authorization (host OR co-host), `trust proxy` for running behind a reverse proxy.
+Key design: room state snapshots to the data volume every 30s + SIGTERM, 5-min grace period for empty rooms, 30s reconnect grace for dropped users (socket disconnect marks `disconnectedAt` and keeps host/co-host role; `leave-room` removes immediately; client `jamClient` auto-rejoins on reconnect), invite codes/waitlist/deleted codes persist to JSON on volume, `canControl()` authorization (host OR co-host), `trust proxy` for running behind a reverse proxy.
 
 ### Client (`client/src/`)
 Three screens in `App.jsx`: Login → Room Selection → Jam Session.

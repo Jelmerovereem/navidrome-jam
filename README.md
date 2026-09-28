@@ -50,7 +50,7 @@ Spotify Jam lets you listen to music together, but it requires Spotify Premium a
 - Supports FLAC and all formats Navidrome handles
 - **Playlists** — Pick a Navidrome playlist and play it for the room (in order or shuffled), or add it to the queue
 - Invite-code-based self-service registration
-- Room resilience — 5-minute grace period on disconnect + state snapshots to persistent volume
+- Room resilience — automatic reconnect + rejoin (e.g. after a locked phone), 30-second grace so hosts keep their role, 5-minute grace for empty rooms, state snapshots to persistent volume
 - Modern dark UI with album-art grid, blurred-cover now-playing view, and SVG icons
 - Mobile-friendly layout (Queue/People tabs on ≤1024px screens)
 - **Installable app (PWA)** — install from the browser ("Install app" on the login screen, or Share → Add to Home Screen on iOS); lock-screen / media-key controls with track artwork
@@ -208,6 +208,7 @@ cd client && npm run dev
 - **Install button**: Shown on login/room screens when the browser supports installing; iOS gets an "Add to Home Screen" hint.
 - **Update prompt**: New versions download in the background and apply only when you tap *Update*, so playback is never interrupted by a reload.
 - **Media Session**: Track title/artist/artwork on the lock screen and in OS media controls; hosts/co-hosts can play/pause/skip from there.
+- **Reconnect fix**: The app no longer gets stuck on "Connecting to Jam server…" after a phone was locked. It reconnects on its own, rejoins the room, and shows a banner meanwhile. The server keeps a dropped user (and their host/co-host role) for 30 seconds before removing them; others see them as "reconnecting…".
 - **Deployment**: PWAs require HTTPS (localhost is exempt). `nginx.conf` serves `sw.js` and `manifest.webmanifest` with `no-cache` so installed apps pick up updates.
 
 ### 2026-09-28 — Modern UI
