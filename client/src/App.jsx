@@ -468,13 +468,28 @@ function App() {
     }
   };
 
+  const fetchPlaylistSongs = async (playlistId) => {
+    const result = await navidrome.getPlaylist(playlistId);
+    const entry = result.playlist?.entry;
+    return entry ? (Array.isArray(entry) ? entry : [entry]) : [];
+  };
+
+  // Start the playlist (in order or shuffled), replacing the queue with the rest of it
+  const handlePlayPlaylist = async (playlist, shuffle = false) => {
+    try {
+      let songs = playlist.songs || await fetchPlaylistSongs(playlist.id);
+      if (songs.length === 0) return;
+      if (shuffle) songs = shuffleArray(songs);
+      handlePlayTrack(songs[0], songs);
+    } catch (err) {
+      console.error('Error playing playlist:', err);
+    }
+  };
+
   const handleBrowsePlaylist = async (playlist) => {
     setIsLoadingBrowse(true);
     try {
-      const result = await navidrome.getPlaylist(playlist.id);
-      const songs = result.playlist?.entry
-        ? (Array.isArray(result.playlist.entry) ? result.playlist.entry : [result.playlist.entry])
-        : [];
+      const songs = await fetchPlaylistSongs(playlist.id);
       setSelectedPlaylist({ ...playlist, songs });
       setBrowseView('playlistSongs');
     } catch (err) {
@@ -725,6 +740,16 @@ function App() {
 
     jamClient.play(song.id, 0);
     loadTrack(song.id);
+  };
+
+  // Shuffle the upcoming queue once — the new order syncs to everyone in the room
+  const handleShuffleQueue = () => {
+    if (!canControl) {
+      alert('Only the host or co-hosts can modify the queue');
+      return;
+    }
+    if (queue.length < 2) return;
+    jamClient.updateQueue(shuffleArray(queue));
   };
 
   const handleAddToQueue = (song) => {
@@ -1385,6 +1410,14 @@ function App() {
                     >
                       <span className="transport-icon repeat-icon"></span>
                     </button>
+                    <button
+                      className="transport-btn shuffle-btn"
+                      onClick={handleShuffleQueue}
+                      disabled={queue.length < 2}
+                      title="Shuffle queue"
+                    >
+                      <span className="transport-icon shuffle-icon"></span>
+                    </button>
                     <div className="transport-separator"></div>
                   </>
                 )}
@@ -1925,6 +1958,12 @@ function App() {
                                 <strong>{playlist.name}</strong>
                                 <span>{playlist.songCount} track{playlist.songCount !== 1 ? 's' : ''}</span>
                               </div>
+                              {canControl && playlist.songCount > 0 && (
+                                <div className="song-actions browse-item-actions">
+                                  <button onClick={(e) => { e.stopPropagation(); handlePlayPlaylist(playlist); }}>Play</button>
+                                  <button onClick={(e) => { e.stopPropagation(); handlePlayPlaylist(playlist, true); }}>Shuffle</button>
+                                </div>
+                              )}
                             </li>
                           ))}
                         </ul>
@@ -1943,6 +1982,21 @@ function App() {
                       <div className="favorites-header">
                         <span className="favorites-count">{selectedPlaylist.name} &middot; {selectedPlaylist.songs.length} track{selectedPlaylist.songs.length !== 1 ? 's' : ''}</span>
                         {canControl && selectedPlaylist.songs.length > 0 && (
+                          <div className="favorites-header-actions">
+                          <button
+                            className="win98-btn"
+                            style={{ fontSize: 10, padding: '2px 8px' }}
+                            onClick={() => handlePlayPlaylist(selectedPlaylist)}
+                          >
+                            Play All
+                          </button>
+                          <button
+                            className="win98-btn"
+                            style={{ fontSize: 10, padding: '2px 8px' }}
+                            onClick={() => handlePlayPlaylist(selectedPlaylist, true)}
+                          >
+                            Shuffle
+                          </button>
                           <button
                             className="win98-btn"
                             style={{ fontSize: 10, padding: '2px 8px' }}
@@ -1960,6 +2014,7 @@ function App() {
                           >
                             Queue All
                           </button>
+                          </div>
                         )}
                       </div>
                       {selectedPlaylist.songs.length > 0 ? (
@@ -2147,6 +2202,16 @@ function App() {
       </div>
     </div>
   );
+}
+
+// Fisher-Yates shuffle, returns a new array
+function shuffleArray(items) {
+  const result = [...items];
+  for (let i = result.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [result[i], result[j]] = [result[j], result[i]];
+  }
+  return result;
 }
 
 function formatDuration(seconds) {

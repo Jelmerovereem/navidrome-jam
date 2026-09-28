@@ -42,7 +42,7 @@ Spotify Jam lets you listen to music together, but it requires Spotify Premium a
 ## Features
 
 - Synchronized play/pause/seek across all participants (<500ms drift)
-- Shared queue with reordering, auto-play, repeat mode, and album auto-queue
+- Shared queue with reordering, auto-play, repeat mode, shuffle, and album auto-queue
 - Host controls with co-host delegation
 - Library browser — Artists, Albums A-Z, Recently Added, Recently Played, Favorites
 - Music search integrated with Navidrome library
@@ -50,7 +50,7 @@ Spotify Jam lets you listen to music together, but it requires Spotify Premium a
 - **Likes** — Like tracks to save them to your Navidrome favorites (persists across rooms/sessions)
 - Liked uploads are protected from auto-cleanup
 - Supports FLAC and all formats Navidrome handles
-- **Playlist browsing** — Load Navidrome playlists into the queue
+- **Playlists** — Pick a Navidrome playlist and play it for the room (in order or shuffled), or add it to the queue
 - Invite-code-based self-service registration
 - Room resilience — 5-minute grace period on disconnect + state snapshots to persistent volume
 - Mobile-friendly layout (Queue/People tabs on ≤1024px screens)

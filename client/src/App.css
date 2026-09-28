@@ -1231,6 +1231,27 @@ body {
   background-color: #00aa00;
 }
 
+.shuffle-btn {
+  width: 40px;
+}
+
+/* Shuffle icon — two crossing arrows via CSS mask (one-shot action, no active state) */
+.shuffle-icon {
+  width: 22px;
+  height: 18px;
+  background-color: var(--text-dark);
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 22 18' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M2 4h4l10 10h4'/%3E%3Cpolyline points='17,11 20,14 17,17'/%3E%3Cpath d='M2 14h4l3-3'/%3E%3Cpath d='M13 7l3-3h4'/%3E%3Cpolyline points='17,1 20,4 17,7'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 22 18' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M2 4h4l10 10h4'/%3E%3Cpolyline points='17,11 20,14 17,17'/%3E%3Cpath d='M2 14h4l3-3'/%3E%3Cpath d='M13 7l3-3h4'/%3E%3Cpolyline points='17,1 20,4 17,7'/%3E%3C/svg%3E");
+  -webkit-mask-size: contain;
+  mask-size: contain;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+}
+
+.shuffle-btn:disabled .shuffle-icon {
+  opacity: 0.4;
+}
+
 /* Transport separator — thin vertical line between transport and reaction groups */
 .transport-separator {
   width: 1px;
@@ -2183,4 +2204,14 @@ body {
   .room-container {
     max-width: 100%;
   }
+}
+
+/* Playlist actions */
+.browse-item-actions {
+  margin-left: auto;
+}
+
+.favorites-header-actions {
+  display: flex;
+  gap: 4px;
 }
