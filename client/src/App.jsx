@@ -181,9 +181,26 @@ function App() {
       setUserReaction(myReaction);
     };
 
+    // Stay on the jam screen while the connection is down; jamClient rejoins
+    // the room automatically once socket.io reconnects
     const handleDisconnected = () => {
       setIsConnected(false);
+    };
+
+    const handleConnected = () => {
+      setIsConnected(true);
+    };
+
+    // Rejoin failed — the room expired while we were away
+    const handleRoomLost = () => {
       setCurrentRoom(null);
+      setCurrentTrack(null);
+      setQueue([]);
+      setPlayHistory([]);
+      setIsHost(false);
+      setCanControl(false);
+      setIsPlaying(false);
+      setRoomError('That room has ended while you were away. Start a new one or join another.');
     };
 
     jamClient.on('room-state', handleRoomState);
@@ -194,6 +211,8 @@ function App() {
     jamClient.on('queue-updated', handleQueueUpdated);
     jamClient.on('error', handleError);
     jamClient.on('disconnected', handleDisconnected);
+    jamClient.on('connected', handleConnected);
+    jamClient.on('room-lost', handleRoomLost);
     jamClient.on('track-reactions', handleTrackReactions);
 
     return () => {
@@ -205,6 +224,8 @@ function App() {
       jamClient.off('queue-updated', handleQueueUpdated);
       jamClient.off('error', handleError);
       jamClient.off('disconnected', handleDisconnected);
+      jamClient.off('connected', handleConnected);
+      jamClient.off('room-lost', handleRoomLost);
       jamClient.off('track-reactions', handleTrackReactions);
       jamClient.disconnect();
     };
@@ -1669,6 +1690,12 @@ function App() {
           </button>
         </div>
       </header>
+
+      {!isConnected && (
+        <div className="reconnect-banner" role="status">
+          <span className="spinner" /> Reconnecting to Jam server…
+        </div>
+      )}
 
       <div className="main-content">
         {/* Left sidebar: People */}

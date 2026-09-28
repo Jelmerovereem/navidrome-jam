@@ -7,6 +7,11 @@ class JamClient {
     this.currentRoomId = null;
     this.userId = this.getUserId();
     this.listeners = {};
+    // Room to rejoin automatically after a reconnect (e.g. phone was locked)
+    this.rejoin = null; // { roomId, username }
+    this.joinUsername = null;
+    this.isRejoining = false;
+    this.handleVisibilityChange = this.handleVisibilityChange.bind(this);
   }
 
   /**
@@ -22,27 +27,78 @@ class JamClient {
   }
 
   /**
-   * Connect to sync server
+   * Connect to sync server.
+   * Resolves on the first successful connection. Socket.io keeps reconnecting
+   * after that (and after a failed first attempt); every connect emits
+   * 'connected' and every drop emits 'disconnected'.
    */
   connect() {
+    if (this.socket) {
+      return this.socket.connected ? Promise.resolve() : new Promise((resolve) => {
+        this.socket.once('connect', () => resolve());
+      });
+    }
+
     return new Promise((resolve, reject) => {
+      let settled = false;
       this.socket = io(this.serverUrl);
+      // Register server event handlers once — not per (re)connect, which would stack duplicates
+      this.setupEventListeners();
 
       this.socket.on('connect', () => {
         console.log('Connected to Jam server');
-        this.setupEventListeners();
-        resolve();
+        this.emit('connected');
+        this.rejoinRoom();
+        if (!settled) {
+          settled = true;
+          resolve();
+        }
       });
 
       this.socket.on('connect_error', (error) => {
-        console.error('Connection error:', error);
-        reject(error);
+        console.error('Connection error:', error.message);
+        if (!settled) {
+          settled = true;
+          reject(error);
+        }
       });
 
-      this.socket.on('disconnect', () => {
-        console.log('Disconnected from Jam server');
-        this.emit('disconnected');
+      this.socket.on('disconnect', (reason) => {
+        console.log('Disconnected from Jam server:', reason);
+        this.isRejoining = false;
+        this.emit('disconnected', reason);
+        // Server-initiated disconnects are not retried automatically by socket.io
+        if (reason === 'io server disconnect') {
+          this.socket.connect();
+        }
       });
+
+      document.addEventListener('visibilitychange', this.handleVisibilityChange);
+    });
+  }
+
+  /**
+   * When the app comes back to the foreground (e.g. phone unlocked), retry
+   * immediately instead of waiting out socket.io's reconnection backoff.
+   */
+  handleVisibilityChange() {
+    if (document.visibilityState === 'visible' && this.socket && !this.socket.connected) {
+      console.log('App visible again, reconnecting');
+      this.socket.connect();
+    }
+  }
+
+  /**
+   * Re-join the room we were in before the connection dropped
+   */
+  rejoinRoom() {
+    if (!this.rejoin) return;
+    console.log(`Rejoining room ${this.rejoin.roomId}`);
+    this.isRejoining = true;
+    this.socket.emit('join-room', {
+      roomId: this.rejoin.roomId,
+      userId: this.userId,
+      username: this.rejoin.username
     });
   }
 
@@ -50,6 +106,9 @@ class JamClient {
    * Disconnect from server
    */
   disconnect() {
+    document.removeEventListener('visibilitychange', this.handleVisibilityChange);
+    this.rejoin = null;
+    this.isRejoining = false;
     if (this.socket) {
       this.socket.disconnect();
       this.socket = null;
@@ -64,6 +123,9 @@ class JamClient {
     this.socket.on('room-state', ({ room }) => {
       console.log('Received room state:', room);
       this.currentRoomId = room.id;
+      this.isRejoining = false;
+      // Only remember rooms the server confirmed we joined
+      this.rejoin = { roomId: room.id, username: this.joinUsername ?? this.rejoin?.username };
       this.emit('room-state', room);
     });
 
@@ -99,6 +161,14 @@ class JamClient {
 
     this.socket.on('error', ({ message }) => {
       console.error('Server error:', message);
+      if (this.isRejoining) {
+        // Room is gone (grace period expired or server restarted without it)
+        this.isRejoining = false;
+        this.rejoin = null;
+        this.currentRoomId = null;
+        this.emit('room-lost', message);
+        return;
+      }
       this.emit('error', message);
     });
   }
@@ -160,6 +230,7 @@ class JamClient {
       throw new Error('Not connected to server');
     }
 
+    this.joinUsername = username;
     this.socket.emit('join-room', {
       roomId,
       userId: this.userId,
@@ -171,12 +242,12 @@ class JamClient {
    * Leave current room (without disconnecting)
    */
   leaveRoom() {
-    if (!this.socket || !this.socket.connected) {
-      return;
-    }
-
-    this.socket.emit('leave-room');
+    this.rejoin = null;
+    this.isRejoining = false;
     this.currentRoomId = null;
+    if (this.socket?.connected) {
+      this.socket.emit('leave-room');
+    }
   }
 
   /**
