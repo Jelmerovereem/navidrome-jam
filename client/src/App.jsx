@@ -10,6 +10,8 @@ const ROOM_POLL_INTERVAL_MS = 10000;
 const RESTART_TRACK_THRESHOLD_S = 3; // seconds before "previous" restarts current track
 const SCROBBLE_MAX_S = 240; // scrobble after half the track or 4 minutes, whichever comes first
 const NOW_PLAYING_THROTTLE_MS = 30000;
+const TRACK_INFO_RETRIES = 3;
+const TRACK_INFO_RETRY_DELAY_MS = 2000;
 
 function App() {
   // Get client instances from context
@@ -17,6 +19,10 @@ function App() {
   const jamClient = useJam();
   const audioRef = useRef(null);
   const pendingSyncRef = useRef(null);
+  // Id of the track loaded or being loaded (updated synchronously, unlike state)
+  const loadingTrackIdRef = useRef(null);
+  const playCounterRef = useRef(0);
+  const queueRef = useRef([]);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
   const [username, setUsername] = useState('');
@@ -109,23 +115,22 @@ function App() {
 
   // Setup Jam client event listeners
   useEffect(() => {
-    // Track the current track ID so sync handler can detect changes
-    let syncedTrackId = null;
-
-    const handleRoomState = (room) => {
+    const handleRoomState = (room, { reconciled = false } = {}) => {
       setCurrentRoom(room);
       const host = room.hostId === jamClient.userId;
       const cohost = (room.coHosts || []).includes(jamClient.userId);
       setIsHost(host);
       setCanControl(host || cohost);
-      setQueue(room.queue || []);
       setIsJoiningRoom(false);
       setIsCreatingRoom(false);
 
+      // Rejoined and pushed our own (newer) playback — keep what we're playing
+      if (reconciled) return;
+
+      setQueue(room.queue || []);
       // On join, load and sync to current playback state
       const ps = room.playbackState;
-      if (ps.trackId) {
-        syncedTrackId = ps.trackId;
+      if (ps.trackId && ps.trackId !== loadingTrackIdRef.current) {
         loadTrack(ps.trackId);
       }
     };
@@ -135,9 +140,8 @@ function App() {
       // Store latest sync state so SyncedAudioPlayer can apply it on mount
       pendingSyncRef.current = state;
 
-      if (state.trackId && state.trackId !== syncedTrackId) {
-        console.log(`Track changed via sync: ${syncedTrackId} -> ${state.trackId}`);
-        syncedTrackId = state.trackId;
+      if (state.trackId && state.trackId !== loadingTrackIdRef.current) {
+        console.log(`Track changed via sync: ${loadingTrackIdRef.current} -> ${state.trackId}`);
         setTrackReactions({ likes: 0, dislikes: 0 });
         setUserReaction(null);
         loadTrack(state.trackId);
@@ -197,6 +201,8 @@ function App() {
 
     // Rejoin failed — the room expired while we were away
     const handleRoomLost = () => {
+      loadingTrackIdRef.current = null;
+      pendingSyncRef.current = null;
       setCurrentRoom(null);
       setCurrentTrack(null);
       setQueue([]);
@@ -333,6 +339,8 @@ function App() {
   const handleLogout = () => {
     navidrome.logout();
     jamClient.disconnect();
+    loadingTrackIdRef.current = null;
+    pendingSyncRef.current = null;
     setIsAuthenticated(false);
     setIsConnected(false);
     setCurrentRoom(null);
@@ -729,26 +737,79 @@ function App() {
     }
   }, [musicTab, currentRoom]);
 
-  const loadTrack = async (songId) => {
+  // Load a track into the player. The stream URL is known up front, so audio
+  // starts loading immediately from whatever metadata we already have (queue
+  // item, search result); getSong then fills in cover art and starred state.
+  // This keeps playback going even if Navidrome's API is briefly unreachable.
+  const loadTrack = async (songId, known = null) => {
+    loadingTrackIdRef.current = songId;
+    const playId = ++playCounterRef.current; // distinguishes replays of the same track
+    const info = known || queueRef.current.find(item => item.id === songId) || null;
+    // `coverArt` may be a Navidrome cover id (songs) or an already-built URL (currentTrack)
+    const coverId = info?.coverArt && !String(info.coverArt).includes('://') ? info.coverArt : songId;
+
+    setCurrentTrack({
+      id: songId,
+      playId,
+      title: info?.title || 'Loading…',
+      artist: info?.artist || '',
+      album: info?.album || '',
+      coverArt: navidrome.getCoverArtUrl(coverId, 300),
+      streamUrl: navidrome.getStreamUrl(songId)
+    });
     setIsLoadingTrack(true);
 
-    try {
-      const result = await navidrome.getSong(songId);
-      const song = result.song;
-      setCurrentTrack({
-        id: song.id,
-        title: song.title,
-        artist: song.artist,
-        album: song.album,
-        coverArt: song.coverArt ? navidrome.getCoverArtUrl(song.coverArt, 300) : null,
-        streamUrl: navidrome.getStreamUrl(song.id)
-      });
-      setTrackStarred(!!song.starred);
-    } catch (error) {
-      console.error('Error loading track:', error);
-    } finally {
-      setIsLoadingTrack(false);
+    let loaded = false;
+    for (let attempt = 0; attempt < TRACK_INFO_RETRIES && !loaded; attempt++) {
+      try {
+        const { song } = await navidrome.getSong(songId);
+        if (playCounterRef.current !== playId) return; // another track was loaded meanwhile
+        setCurrentTrack(prev => ({
+          ...prev,
+          title: song.title,
+          artist: song.artist,
+          album: song.album,
+          coverArt: song.coverArt ? navidrome.getCoverArtUrl(song.coverArt, 300) : null,
+        }));
+        setTrackStarred(!!song.starred);
+        loaded = true;
+      } catch (error) {
+        console.error('Error loading track info:', error);
+        await new Promise(resolve => setTimeout(resolve, TRACK_INFO_RETRY_DELAY_MS * (attempt + 1)));
+      }
     }
+    if (playCounterRef.current !== playId) return;
+    if (!loaded && !info) {
+      setCurrentTrack(prev => ({ ...prev, title: 'Unknown track' }));
+    }
+    setIsLoadingTrack(false);
+  };
+
+  // Start playback locally right away instead of waiting for the server to echo
+  // our command back — so auto-advance keeps working while the connection is down
+  const startLocalPlayback = (trackId, position = 0) => {
+    const audio = audioRef.current;
+    if (audio && loadingTrackIdRef.current === trackId) {
+      // Same track (restart / repeat): the stream URL doesn't change, so play directly
+      audio.currentTime = position;
+      audio.play().catch(err => console.error('Playback error:', err));
+    } else {
+      // New track: SyncedAudioPlayer applies this once the new stream is ready
+      pendingSyncRef.current = { trackId, position, playing: true, timestamp: Date.now(), local: true };
+    }
+  };
+
+  // Play a track for the room (controllers): start it locally and tell the server
+  const playTrack = (track, position = 0) => {
+    jamClient.play(track.id, position);
+    startLocalPlayback(track.id, position);
+    loadTrack(track.id, track);
+  };
+
+  // Update the queue locally and for the room (local first so offline advances use it)
+  const updateQueue = (newQueue) => {
+    setQueue(newQueue);
+    jamClient.updateQueue(newQueue);
   };
 
   const handlePlayTrack = (song, albumSongs = null) => {
@@ -768,11 +829,10 @@ function App() {
       const remaining = albumSongs.slice(songIndex + 1).map(s => ({
         id: s.id, title: s.title, artist: s.artist, album: s.album
       }));
-      jamClient.updateQueue(remaining);
+      updateQueue(remaining);
     }
 
-    jamClient.play(song.id, 0);
-    loadTrack(song.id);
+    playTrack(song);
   };
 
   // Shuffle the upcoming queue once — the new order syncs to everyone in the room
@@ -782,7 +842,7 @@ function App() {
       return;
     }
     if (queue.length < 2) return;
-    jamClient.updateQueue(shuffleArray(queue));
+    updateQueue(shuffleArray(queue));
   };
 
   const handleAddToQueue = (song) => {
@@ -800,18 +860,29 @@ function App() {
 
     // If nothing is playing, auto-play immediately
     if (!currentTrack) {
-      jamClient.updateQueue(queue);
-      jamClient.play(song.id, 0);
-      loadTrack(song.id);
+      updateQueue(queue);
+      playTrack(song);
       return;
     }
 
     const newQueue = [...queue, item];
-    jamClient.updateQueue(newQueue);
+    updateQueue(newQueue);
   };
 
   const handleTrackEnded = useCallback(() => {
-    if (!canControl) return;
+    if (!canControl) {
+      // Listener: the host normally sends the next track, but if our connection
+      // is down (e.g. phone locked) keep playing with what's next in the queue.
+      // The host's next sync corrects this if it picked something else.
+      if (queue.length > 0) {
+        const next = queue[0];
+        console.log(`Track ended, continuing locally with: ${next.title}`);
+        setQueue(queue.slice(1));
+        startLocalPlayback(next.id);
+        loadTrack(next.id, next);
+      }
+      return;
+    }
 
     // Re-append current track to end of queue if repeat is on
     const reappendItem = repeatMode && currentTrack
@@ -831,8 +902,7 @@ function App() {
     if (queue.length === 0 && reappendItem) {
       // Queue empty but repeat on — replay current track
       console.log(`Repeat: replaying ${currentTrack.title}`);
-      jamClient.play(currentTrack.id, 0);
-      loadTrack(currentTrack.id);
+      playTrack(currentTrack);
       return;
     }
 
@@ -841,14 +911,15 @@ function App() {
 
     console.log(`Auto-playing next track: ${nextTrack.title}${reappendItem ? ' (repeat on)' : ''}`);
 
-    jamClient.updateQueue(newQueue);
-    jamClient.play(nextTrack.id, 0);
-    loadTrack(nextTrack.id);
+    updateQueue(newQueue);
+    playTrack(nextTrack);
   }, [canControl, queue, jamClient, currentTrack, repeatMode]);
 
   const handleLeaveRoom = () => {
     jamClient.leaveRoom();
 
+    loadingTrackIdRef.current = null;
+    pendingSyncRef.current = null;
     setCurrentRoom(null);
     setCurrentTrack(null);
     setQueue([]);
@@ -869,9 +940,12 @@ function App() {
     const audio = audioRef.current;
     if (!audio) return;
 
+    // Apply locally right away, then tell the room
     if (audio.paused) {
+      audio.play().catch(err => console.error('Playback error:', err));
       jamClient.play(currentTrack.id, audio.currentTime);
     } else {
+      audio.pause();
       jamClient.pause(audio.currentTime);
     }
   };
@@ -891,9 +965,8 @@ function App() {
     const nextTrack = queue[0];
     const newQueue = [...queue.slice(1), ...(reappendItem ? [reappendItem] : [])];
 
-    jamClient.updateQueue(newQueue);
-    jamClient.play(nextTrack.id, 0);
-    loadTrack(nextTrack.id);
+    updateQueue(newQueue);
+    playTrack(nextTrack);
   }, [canControl, queue, jamClient, currentTrack, repeatMode]);
 
   const handlePrevTrack = useCallback(() => {
@@ -903,7 +976,7 @@ function App() {
 
     // If more than 3 seconds in, restart current track
     if (audio && audio.currentTime > RESTART_TRACK_THRESHOLD_S) {
-      audio.currentTime = 0;
+      startLocalPlayback(currentTrack.id, 0);
       jamClient.play(currentTrack.id, 0);
       return;
     }
@@ -912,7 +985,7 @@ function App() {
     if (playHistory.length === 0) {
       // No history — just restart
       if (audio) {
-        audio.currentTime = 0;
+        startLocalPlayback(currentTrack.id, 0);
         jamClient.play(currentTrack.id, 0);
       }
       return;
@@ -923,11 +996,30 @@ function App() {
     setPlayHistory(prev => prev.slice(0, -1));
 
     const newQueue = [{ id: currentTrack.id, title: currentTrack.title, artist: currentTrack.artist, album: currentTrack.album }, ...queue];
-    jamClient.updateQueue(newQueue);
-
-    jamClient.play(prevTrack.id, 0);
-    loadTrack(prevTrack.id);
+    updateQueue(newQueue);
+    playTrack(prevTrack);
   }, [canControl, currentTrack, jamClient, playHistory, queue]);
+
+  useEffect(() => {
+    queueRef.current = queue;
+  }, [queue]);
+
+  // What we're actually playing — pushed to the room after a reconnect if we're
+  // in control and nobody else changed playback meanwhile (see jamClient)
+  useEffect(() => {
+    jamClient.getLocalPlayback = () => {
+      const audio = audioRef.current;
+      const trackId = loadingTrackIdRef.current;
+      if (!audio || !trackId) return null;
+      return {
+        trackId,
+        position: audio.currentTime || 0,
+        playing: !audio.paused && !audio.ended,
+        queue: queueRef.current,
+      };
+    };
+    return () => { jamClient.getLocalPlayback = null; };
+  }, [jamClient]);
 
   // Report playback to Navidrome like other Subsonic clients: "Now Playing" while
   // audio is playing, and a scrobble once enough of the track has been heard.
@@ -979,7 +1071,8 @@ function App() {
       audio.removeEventListener('timeupdate', handleTimeUpdate);
       audio.removeEventListener('pause', handlePause);
     };
-  }, [currentTrack, navidrome]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once per play, not per metadata update
+  }, [currentTrack?.playId, navidrome]);
 
   // Lock screen / notification / hardware media keys (Media Session API)
   const mediaActionsRef = useRef({});
@@ -1095,11 +1188,10 @@ function App() {
     const items = songs.map(s => ({ id: s.id, title: s.title, artist: s.artist, album: s.album }));
     if (!currentTrack && items.length > 0) {
       const [first, ...rest] = items;
-      jamClient.updateQueue([...queue, ...rest]);
-      jamClient.play(first.id, 0);
-      loadTrack(first.id);
+      updateQueue([...queue, ...rest]);
+      playTrack(first);
     } else {
-      jamClient.updateQueue([...queue, ...items]);
+      updateQueue([...queue, ...items]);
     }
   };
 
@@ -1108,11 +1200,11 @@ function App() {
     if (target < 0 || target >= queue.length) return;
     const newQueue = [...queue];
     [newQueue[index], newQueue[target]] = [newQueue[target], newQueue[index]];
-    jamClient.updateQueue(newQueue);
+    updateQueue(newQueue);
   };
 
   const removeQueueItem = (index) => {
-    jamClient.updateQueue(queue.filter((_, i) => i !== index));
+    updateQueue(queue.filter((_, i) => i !== index));
   };
 
   const toggleRepeat = () => {
@@ -1754,6 +1846,7 @@ function App() {
 
                 <SyncedAudioPlayer
                   streamUrl={currentTrack.streamUrl}
+                  trackId={currentTrack.id}
                   jamClient={jamClient}
                   isHost={canControl}
                   isConnected={isConnected}

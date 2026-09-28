@@ -10,6 +10,12 @@ class JamClient {
     // Room to rejoin automatically after a reconnect (e.g. phone was locked)
     this.rejoin = null; // { roomId, username }
     this.joinUsername = null;
+    // Timestamp of the last playback state we saw from the server, to tell on
+    // rejoin whether anyone changed playback while we were away
+    this.lastSyncTimestamp = null;
+    this.staleSyncTimestamp = null;
+    // Set by the app: () => ({ trackId, position, playing, queue }) | null
+    this.getLocalPlayback = null;
     this.isRejoining = false;
     this.handleVisibilityChange = this.handleVisibilityChange.bind(this);
   }
@@ -103,6 +109,40 @@ class JamClient {
   }
 
   /**
+   * After rejoining, decide whose playback state wins. If nobody changed
+   * playback on the server while we were away, the server's state is stale and
+   * our local playback (which kept going offline, possibly onto later tracks)
+   * is newer:
+   * - controllers push it to the room
+   * - listeners keep playing and wait for the host, instead of snapping back
+   * Otherwise (someone else changed playback meanwhile) the server wins.
+   * @returns {boolean} whether local state was kept
+   */
+  reconcileAfterRejoin(room) {
+    const local = this.getLocalPlayback?.();
+    const serverUnchanged = (room.playbackState?.timestamp ?? null) === this.lastSyncTimestamp;
+    if (!local?.trackId || !serverUnchanged) return false;
+
+    const canControl = room.hostId === this.userId || (room.coHosts || []).includes(this.userId);
+    if (!canControl && !local.playing) return false;
+
+    // The server re-sends its (stale) state right after room-state; skip it
+    this.staleSyncTimestamp = room.playbackState?.timestamp ?? null;
+
+    if (canControl) {
+      console.log(`Rejoin: pushing local playback (${local.trackId} @ ${local.position.toFixed(1)}s)`);
+      this.sendRoomCommand('update-queue', { queue: local.queue });
+      this.sendRoomCommand('play', { trackId: local.trackId, position: local.position });
+      if (!local.playing) {
+        this.sendRoomCommand('pause', { position: local.position });
+      }
+    } else {
+      console.log(`Rejoin: server state is stale, keeping local playback (${local.trackId})`);
+    }
+    return true;
+  }
+
+  /**
    * Disconnect from server
    */
   disconnect() {
@@ -122,15 +162,28 @@ class JamClient {
   setupEventListeners() {
     this.socket.on('room-state', ({ room }) => {
       console.log('Received room state:', room);
+      const wasRejoining = this.isRejoining;
       this.currentRoomId = room.id;
       this.isRejoining = false;
       // Only remember rooms the server confirmed we joined
       this.rejoin = { roomId: room.id, username: this.joinUsername ?? this.rejoin?.username };
-      this.emit('room-state', room);
+
+      const reconciled = wasRejoining && this.reconcileAfterRejoin(room);
+      this.lastSyncTimestamp = room.playbackState?.timestamp ?? null;
+      this.emit('room-state', room, { rejoined: wasRejoining, reconciled });
     });
 
     this.socket.on('sync', (state) => {
+      if (this.staleSyncTimestamp !== null) {
+        const stale = state.timestamp === this.staleSyncTimestamp;
+        this.staleSyncTimestamp = null;
+        if (stale) {
+          console.log('Ignoring stale sync after rejoin (local playback is newer)');
+          return;
+        }
+      }
       console.log('Sync command received:', state);
+      this.lastSyncTimestamp = state.timestamp;
       this.emit('sync', state);
     });
 
@@ -166,7 +219,7 @@ class JamClient {
 
     this.socket.on('error', ({ message }) => {
       console.error('Server error:', message);
-      if (this.isRejoining) {
+      if (this.isRejoining && message === 'Room not found') {
         // Room is gone (grace period expired or server restarted without it)
         this.isRejoining = false;
         this.rejoin = null;
@@ -256,6 +309,19 @@ class JamClient {
   }
 
   /**
+   * Send a command for the current room. While disconnected, commands are
+   * dropped rather than buffered: socket.io would replay them on reconnect
+   * before we've rejoined the room (the server rejects them), and the latest
+   * state is pushed on rejoin anyway (see reconcile in 'room-state').
+   * @returns {boolean} whether the command was sent
+   */
+  sendRoomCommand(event, payload) {
+    if (!this.socket?.connected) return false;
+    this.socket.emit(event, { roomId: this.currentRoomId, ...payload });
+    return true;
+  }
+
+  /**
    * Play a track (host only)
    */
   play(trackId, position = 0) {
@@ -263,8 +329,7 @@ class JamClient {
       throw new Error('Not in a room');
     }
 
-    this.socket.emit('play', {
-      roomId: this.currentRoomId,
+    this.sendRoomCommand('play', {
       trackId,
       position
     });
@@ -278,8 +343,7 @@ class JamClient {
       throw new Error('Not in a room');
     }
 
-    this.socket.emit('pause', {
-      roomId: this.currentRoomId,
+    this.sendRoomCommand('pause', {
       position
     });
   }
@@ -292,8 +356,7 @@ class JamClient {
       throw new Error('Not in a room');
     }
 
-    this.socket.emit('seek', {
-      roomId: this.currentRoomId,
+    this.sendRoomCommand('seek', {
       position
     });
   }
@@ -306,8 +369,7 @@ class JamClient {
       throw new Error('Not in a room');
     }
 
-    this.socket.emit('update-queue', {
-      roomId: this.currentRoomId,
+    this.sendRoomCommand('update-queue', {
       queue
     });
   }
@@ -320,8 +382,7 @@ class JamClient {
       throw new Error('Not in a room');
     }
 
-    this.socket.emit('promote-cohost', {
-      roomId: this.currentRoomId,
+    this.sendRoomCommand('promote-cohost', {
       userId
     });
   }
@@ -334,8 +395,7 @@ class JamClient {
       throw new Error('Not in a room');
     }
 
-    this.socket.emit('demote-cohost', {
-      roomId: this.currentRoomId,
+    this.sendRoomCommand('demote-cohost', {
       userId
     });
   }
@@ -348,8 +408,7 @@ class JamClient {
       return;
     }
 
-    this.socket.emit('heartbeat', {
-      roomId: this.currentRoomId,
+    this.sendRoomCommand('heartbeat', {
       position
     });
   }
@@ -361,8 +420,7 @@ class JamClient {
     if (!this.currentRoomId) {
       throw new Error('Not in a room');
     }
-    this.socket.emit('like-track', {
-      roomId: this.currentRoomId,
+    this.sendRoomCommand('like-track', {
       trackId
     });
   }
@@ -374,8 +432,7 @@ class JamClient {
     if (!this.currentRoomId) {
       throw new Error('Not in a room');
     }
-    this.socket.emit('dislike-track', {
-      roomId: this.currentRoomId,
+    this.sendRoomCommand('dislike-track', {
       trackId
     });
   }
@@ -387,8 +444,7 @@ class JamClient {
     if (!this.currentRoomId) {
       throw new Error('Not in a room');
     }
-    this.socket.emit('remove-reaction', {
-      roomId: this.currentRoomId,
+    this.sendRoomCommand('remove-reaction', {
       trackId
     });
   }
@@ -398,8 +454,7 @@ class JamClient {
    */
   updateCommunity(community) {
     if (!this.currentRoomId) return;
-    this.socket.emit('update-community', {
-      roomId: this.currentRoomId,
+    this.sendRoomCommand('update-community', {
       community: community || null
     });
   }
@@ -425,9 +480,9 @@ class JamClient {
   /**
    * Emit event to listeners
    */
-  emit(event, data) {
+  emit(event, ...args) {
     if (!this.listeners[event]) return;
-    this.listeners[event].forEach(callback => callback(data));
+    this.listeners[event].forEach(callback => callback(...args));
   }
 
   /**
