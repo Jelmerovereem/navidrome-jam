@@ -62,6 +62,8 @@ Key design: room state snapshots to the data volume every 30s + SIGTERM, 5-min g
 ### Client (`client/src/`)
 Three screens in `App.jsx`: Login → Room Selection → Jam Session.
 
+**PWA**: `vite-plugin-pwa` in `vite.config.js` (manifest + Workbox `generateSW`, `registerType: 'prompt'`). `components/UpdatePrompt.jsx` shows the update toast (never auto-reload — it would cut off playback); `hooks/usePwaInstall.js` captures `beforeinstallprompt` for the Install button. Media Session (lock-screen controls) lives in `App.jsx`. Service worker only runs in production builds (`npm run build && npm run preview`), requires HTTPS or localhost, and must only precache same-origin app files — never Navidrome/sync-server URLs. Icons in `public/icons/`.
+
 Service layer: `navidrome.js` (Subsonic API + MD5 auth), `jamClient.js` (Socket.io wrapper with custom event emitter), `NavidromeContext.jsx`/`JamContext.jsx` (create/destroy on mount/unmount — prevents duplicate listeners during Vite HMR).
 
 **Visual theme**: Modern dark UI (Inter, violet→pink accent). Design tokens as CSS variables in `App.css` (`--bg`, `--surface*`, `--text*`, `--accent*`, `--radius*`). Icons are inline SVGs in `components/Icons.jsx`. Responsive: 3 columns >1024px; single column with Queue/People tabs below.

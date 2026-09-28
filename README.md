@@ -53,6 +53,7 @@ Spotify Jam lets you listen to music together, but it requires Spotify Premium a
 - Room resilience — 5-minute grace period on disconnect + state snapshots to persistent volume
 - Modern dark UI with album-art grid, blurred-cover now-playing view, and SVG icons
 - Mobile-friendly layout (Queue/People tabs on ≤1024px screens)
+- **Installable app (PWA)** — install from the browser ("Install app" on the login screen, or Share → Add to Home Screen on iOS); lock-screen / media-key controls with track artwork
 
 ## Tech Stack
 
@@ -200,6 +201,14 @@ cd client && npm run dev
 - **TypeScript migration** — Full codebase migration (server + client)
 
 ## Changelog
+
+### 2026-09-28 — Installable PWA
+
+- **Installable app**: Web app manifest, icons (incl. maskable + Apple touch icon), and a Workbox service worker that precaches the app shell. Opens offline to the login screen; Navidrome and the sync server are always fetched live.
+- **Install button**: Shown on login/room screens when the browser supports installing; iOS gets an "Add to Home Screen" hint.
+- **Update prompt**: New versions download in the background and apply only when you tap *Update*, so playback is never interrupted by a reload.
+- **Media Session**: Track title/artist/artwork on the lock screen and in OS media controls; hosts/co-hosts can play/pause/skip from there.
+- **Deployment**: PWAs require HTTPS (localhost is exempt). `nginx.conf` serves `sw.js` and `manifest.webmanifest` with `no-cache` so installed apps pick up updates.
 
 ### 2026-09-28 — Modern UI
 

@@ -3,6 +3,7 @@ import { useNavidrome } from './contexts/NavidromeContext';
 import { useJam } from './contexts/JamContext';
 import SyncedAudioPlayer from './components/SyncedAudioPlayer';
 import { Icon, Logo } from './components/Icons';
+import { usePwaInstall, promptInstall } from './hooks/usePwaInstall';
 import './App.css';
 
 const ROOM_POLL_INTERVAL_MS = 10000;
@@ -40,6 +41,7 @@ function App() {
   const [isJoiningRoom, setIsJoiningRoom] = useState(false);
   const [activeRooms, setActiveRooms] = useState([]);
   const [codeCopied, setCodeCopied] = useState(false);
+  const pwa = usePwaInstall();
   const [communities, setCommunities] = useState([]);
 
   const [currentTrack, setCurrentTrack] = useState(null);
@@ -952,6 +954,59 @@ function App() {
     };
   }, [currentTrack, navidrome]);
 
+  // Lock screen / notification / hardware media keys (Media Session API)
+  const mediaActionsRef = useRef({});
+  useEffect(() => {
+    mediaActionsRef.current = {
+      play: handlePlayPause,
+      pause: handlePlayPause,
+      nexttrack: handleNextTrack,
+      previoustrack: handlePrevTrack,
+    };
+  });
+
+  useEffect(() => {
+    if (!('mediaSession' in navigator)) return;
+    const session = navigator.mediaSession;
+
+    if (!currentTrack) {
+      session.metadata = null;
+      return;
+    }
+
+    session.metadata = new MediaMetadata({
+      title: currentTrack.title,
+      artist: currentTrack.artist,
+      album: currentTrack.album,
+      artwork: currentTrack.coverArt
+        ? [{ src: currentTrack.coverArt, sizes: '300x300' }]
+        : [{ src: '/icons/icon-512.png', sizes: '512x512', type: 'image/png' }],
+    });
+
+    // Only hosts/co-hosts drive the room; listeners get the browser's default
+    // local play/pause and no skip buttons
+    const actions = ['play', 'pause', 'nexttrack', 'previoustrack'];
+    for (const action of actions) {
+      try {
+        session.setActionHandler(action, canControl ? () => mediaActionsRef.current[action]() : null);
+      } catch {
+        // action not supported by this browser
+      }
+    }
+
+    return () => {
+      for (const action of actions) {
+        try { session.setActionHandler(action, null); } catch { /* unsupported */ }
+      }
+    };
+  }, [currentTrack, canControl]);
+
+  useEffect(() => {
+    if ('mediaSession' in navigator) {
+      navigator.mediaSession.playbackState = currentTrack ? (isPlaying ? 'playing' : 'paused') : 'none';
+    }
+  }, [isPlaying, currentTrack]);
+
   const handlePlaybackUpdate = useCallback((time, paused) => {
     setIsPlaying(!paused);
   }, []);
@@ -1238,6 +1293,16 @@ function App() {
 
   const authFooter = (
     <footer className="auth-footer">
+      {pwa.canInstall && (
+        <button className="footer-link footer-install" onClick={promptInstall}>
+          <Icon name="download" size={14} /> Install app
+        </button>
+      )}
+      {!pwa.canInstall && pwa.showIOSHint && (
+        <span className="footer-hint">
+          Install: tap <Icon name="share" size={14} /> then “Add to Home Screen”
+        </span>
+      )}
       <span className="auth-footer-server">{navidrome.baseUrl}</span>
       <a href="https://github.com/Jelmerovereem/navidrome-jam" target="_blank" rel="noopener" className="footer-link">
         <Icon name="github" size={14} /> Source on GitHub

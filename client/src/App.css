@@ -2131,6 +2131,70 @@ button.crumb:hover {
   font-variant-numeric: tabular-nums;
 }
 
+/* Install button / hint (auth footer) */
+button.footer-link {
+  background: transparent;
+  font-size: inherit;
+}
+
+.footer-install {
+  color: var(--text);
+  border-color: rgba(139, 92, 246, 0.45);
+  background: var(--accent-soft) !important;
+}
+
+.footer-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* Update toast */
+@keyframes toast-in {
+  from { opacity: 0; transform: translate(-50%, 12px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: max(16px, env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: max-content;
+  max-width: calc(100vw - 24px);
+  padding: 8px 8px 8px 16px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-full);
+  box-shadow: var(--shadow-lg);
+  color: var(--text);
+  font-size: 13px;
+  animation: toast-in 0.25s var(--ease);
+}
+
+.toast > .icon {
+  color: var(--accent-hover);
+}
+
+.toast-text {
+  min-width: 0;
+}
+
+@media (max-width: 640px) {
+  .toast {
+    border-radius: var(--radius);
+    flex-wrap: wrap;
+  }
+
+  .toast-text {
+    flex: 1 1 60%;
+  }
+}
+
 /* Scrollbars */
 .jam-screen * {
   scrollbar-width: thin;

@@ -204,6 +204,19 @@ server {
     root /opt/navidrome-jam/client/dist;
     index index.html;
 
+    # PWA: the service worker and manifest must never be cached long-term,
+    # otherwise installed apps never pick up new versions
+    location = /sw.js {
+        add_header Cache-Control "no-cache";
+        try_files $uri =404;
+    }
+
+    location = /manifest.webmanifest {
+        types { application/manifest+json webmanifest; }
+        add_header Cache-Control "no-cache";
+        try_files $uri =404;
+    }
+
     location / {
         try_files $uri $uri/ /index.html;
     }
