@@ -19,6 +19,8 @@ function App() {
   const jamClient = useJam();
   const audioRef = useRef(null);
   const pendingSyncRef = useRef(null);
+  // Whether playback is meant to be running (kept by SyncedAudioPlayer)
+  const playIntentRef = useRef(false);
   // Id of the track loaded or being loaded (updated synchronously, unlike state)
   const loadingTrackIdRef = useRef(null);
   const playCounterRef = useRef(0);
@@ -1014,7 +1016,9 @@ function App() {
       return {
         trackId,
         position: audio.currentTime || 0,
-        playing: !audio.paused && !audio.ended,
+        // Intent, not audio.paused: a stream that failed while the phone was locked
+        // must not be pushed to the room as "host paused"
+        playing: playIntentRef.current,
         queue: queueRef.current,
       };
     };
@@ -1158,6 +1162,10 @@ function App() {
   // What plays when the current track ends — same rules as handleTrackEnded, so
   // the player can preload it and switch without a gap
   const nextUpTrack = queue[0] || (canControl && repeatMode ? currentTrack : null);
+  // Downloaded ahead in full so they play without network (next two tracks)
+  const upcomingStreamUrls = [...new Set(
+    [nextUpTrack, queue[1]].filter(Boolean).map(t => navidrome.getStreamUrl(t.id))
+  )];
 
   const joinRoomById = (roomId) => {
     setRoomInput(roomId);
@@ -1851,6 +1859,8 @@ function App() {
                   streamUrl={currentTrack.streamUrl}
                   trackId={currentTrack.id}
                   nextStreamUrl={nextUpTrack ? navidrome.getStreamUrl(nextUpTrack.id) : null}
+                  prefetchUrls={upcomingStreamUrls}
+                  playIntentRef={playIntentRef}
                   jamClient={jamClient}
                   isHost={canControl}
                   isConnected={isConnected}

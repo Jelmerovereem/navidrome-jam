@@ -12,14 +12,23 @@ const STALL_TIMEOUT_MS = 12000; // no progress for this long while playing = stu
 const MEDIA_ERR_ABORTED = 1;
 const HAVE_METADATA = 1;
 const HAVE_FUTURE_DATA = 3;
-// Start preloading the next track into the standby element this long before the end
+// Start streaming the next track into the standby element this long before the
+// end (fallback for when it couldn't be downloaded ahead)
 const PRELOAD_LEAD_S = 30;
 const PRELOAD_RETRY_MS = 5000; // retry a failed preload this often
+// Upcoming tracks are downloaded completely while the current one plays, so they
+// play without any network (browsers only buffer a few seconds of a paused
+// element, and mobile OSes may cut network for a locked phone)
+const PREFETCH_MAX_BYTES = 150 * 1024 * 1024;
+const PREFETCH_RETRY_BASE_MS = 5000;
+const PREFETCH_RETRY_MAX_MS = 60000;
 
 export default function SyncedAudioPlayer({
   streamUrl,
   trackId,
   nextStreamUrl,
+  prefetchUrls = [],
+  playIntentRef,
   jamClient,
   isHost,
   isConnected,
@@ -48,8 +57,10 @@ export default function SyncedAudioPlayer({
     return savedVolume ? parseFloat(savedVolume) : 1.0;
   });
   const heartbeatIntervalRef = useRef(null);
-  // Whether playback is meant to be running (survives stream failures/reloads)
-  const shouldPlayRef = useRef(false);
+  // Whether playback is meant to be running (survives stream failures/reloads).
+  // Shared with the app so a reconnect reports intent, not a transient paused state.
+  const internalIntentRef = useRef(false);
+  const shouldPlayRef = playIntentRef || internalIntentRef;
   const recoveringRef = useRef(false);
   // Last server sync applied — used to resume at the room's position after a failure
   const lastSyncRef = useRef(null);
@@ -63,7 +74,22 @@ export default function SyncedAudioPlayer({
     if (activeIndexRef.current === 1) audioRef.current = el;
   }, [audioRef]);
 
-  const standbyElement = () => elementsRef.current[1 - activeIndexRef.current];
+  // Logical stream URL each element holds (its src may be a blob: URL of a downloaded copy)
+  const sourceUrlsRef = useRef([null, null]);
+  // Upcoming tracks downloaded in full: stream URL -> { status, objectUrl, controller }
+  const prefetchRef = useRef(new Map());
+
+  const standbyIndex = () => 1 - activeIndexRef.current;
+
+  // Load a track into an element — from the downloaded copy if we have one
+  const setSource = (index, url) => {
+    const el = elementsRef.current[index];
+    if (!el) return;
+    const downloaded = prefetchRef.current.get(url);
+    sourceUrlsRef.current[index] = url;
+    el.preload = 'auto';
+    el.src = downloaded?.status === 'ready' ? downloaded.objectUrl : url;
+  };
 
   // Make the standby element the active one (it already holds the new track)
   const activateStandby = () => {
@@ -75,26 +101,119 @@ export default function SyncedAudioPlayer({
     return audioRef.current;
   };
 
-  const hasPreloaded = (el, url) => !!el && !!url && el.src === url && !el.error;
+  const hasPreloaded = (index, url) => {
+    const el = elementsRef.current[index];
+    return !!el && !!url && sourceUrlsRef.current[index] === url && !el.error;
+  };
 
-  useEffect(() => {
-    nextStreamUrlRef.current = nextStreamUrl;
-  }, [nextStreamUrl]);
+  // Get the standby element ready with the next track: right away from a downloaded
+  // copy, or by streaming it once the current track is near its end
+  const prepareStandby = ({ nearEnd = false, retryFailed = false } = {}) => {
+    const next = nextStreamUrlRef.current;
+    const index = standbyIndex();
+    const el = elementsRef.current[index];
+    if (!next || !el) return;
+    const downloaded = prefetchRef.current.get(next)?.status === 'ready';
 
-  // Point the active element at the current track. Runs before the effects that
-  // apply sync state / recovery so they act on the right element.
+    if (sourceUrlsRef.current[index] === next) {
+      if (downloaded && !el.src.startsWith('blob:') && el.paused) {
+        console.log('Next track downloaded, switching standby to the local copy');
+        setSource(index, next);
+      } else if (el.error && retryFailed) {
+        console.log('Retrying failed preload of next track');
+        setSource(index, next);
+      }
+      return;
+    }
+    if (downloaded || nearEnd) {
+      console.log(downloaded ? 'Next track ready (downloaded)' : 'Preloading next track (streaming)');
+      setSource(index, next);
+    }
+  };
+
+  const downloadTrack = async (url, entry) => {
+    const { signal } = entry.controller;
+    for (let attempt = 0; !signal.aborted; attempt++) {
+      try {
+        const response = await fetch(url, { signal });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const size = Number(response.headers.get('content-length')) || 0;
+        if (size > PREFETCH_MAX_BYTES) {
+          console.log(`Upcoming track too large to download ahead (${toMB(size)} MB), will stream it`);
+          entry.status = 'skipped';
+          entry.controller.abort();
+          return;
+        }
+        const blob = await response.blob();
+        if (signal.aborted) return;
+        entry.objectUrl = URL.createObjectURL(blob);
+        entry.status = 'ready';
+        console.log(`Downloaded upcoming track (${toMB(blob.size)} MB)`);
+        prepareStandby();
+        return;
+      } catch (err) {
+        if (signal.aborted) return;
+        const delay = Math.min(PREFETCH_RETRY_BASE_MS * 2 ** attempt, PREFETCH_RETRY_MAX_MS);
+        console.warn(`Downloading upcoming track failed (${err.message}), retrying in ${delay / 1000}s`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+  };
+
+  // Point the active element at the current track. Must run before the effects
+  // below: it may switch to the standby, which those would otherwise refill with
+  // the *next* next track first, and the sync/recovery effects need the right element.
   useEffect(() => {
-    const audio = audioRef.current;
-    if (!audio || !streamUrl || audio.src === streamUrl) return;
-    const standby = standbyElement();
-    if (hasPreloaded(standby, streamUrl)) {
+    const index = activeIndexRef.current;
+    if (!elementsRef.current[index] || !streamUrl || sourceUrlsRef.current[index] === streamUrl) return;
+    if (hasPreloaded(standbyIndex(), streamUrl)) {
       // Skipped to the track we'd already preloaded: switch instead of reloading
       console.log('Switching to preloaded track');
       activateStandby();
     } else {
-      audio.src = streamUrl;
+      setSource(index, streamUrl);
     }
   }, [streamUrl]);
+
+  useEffect(() => {
+    nextStreamUrlRef.current = nextStreamUrl;
+    prepareStandby();
+  }, [nextStreamUrl]);
+
+  // Download upcoming tracks; drop downloads that are no longer upcoming (except
+  // the one now playing — skipping ahead makes an upcoming track the current one)
+  const prefetchKey = prefetchUrls.filter(Boolean).join('\n');
+  useEffect(() => {
+    const wanted = prefetchKey ? prefetchKey.split('\n') : [];
+    const cache = prefetchRef.current;
+    const inUse = (objectUrl) => elementsRef.current.some(el => el?.src === objectUrl);
+
+    for (const [url, entry] of cache) {
+      if (wanted.includes(url) || url === streamUrl) continue;
+      entry.controller.abort();
+      if (entry.objectUrl && inUse(entry.objectUrl)) continue; // still playing it; free it later
+      if (entry.objectUrl) URL.revokeObjectURL(entry.objectUrl);
+      cache.delete(url);
+    }
+
+    for (const url of wanted) {
+      if (cache.has(url)) continue;
+      const entry = { status: 'loading', objectUrl: null, controller: new AbortController() };
+      cache.set(url, entry);
+      downloadTrack(url, entry);
+    }
+  }, [prefetchKey, streamUrl]);
+
+  useEffect(() => {
+    const cache = prefetchRef.current;
+    return () => {
+      for (const entry of cache.values()) {
+        entry.controller.abort();
+        if (entry.objectUrl) URL.revokeObjectURL(entry.objectUrl);
+      }
+      cache.clear();
+    };
+  }, []);
 
   // Set volume on both audio elements
   useEffect(() => {
@@ -130,8 +249,8 @@ export default function SyncedAudioPlayer({
       setIsPlaying(false);
     };
     const handleEnded = () => {
-      const standby = standbyElement();
-      if (hasPreloaded(standby, nextStreamUrlRef.current)) {
+      const standby = elementsRef.current[standbyIndex()];
+      if (hasPreloaded(standbyIndex(), nextStreamUrlRef.current)) {
         // Start the preloaded next track right here, in the 'ended' event, so audio
         // never goes idle between tracks (no React render or network round trip).
         // The app then loads that same track as usual, which is a no-op here.
@@ -164,33 +283,26 @@ export default function SyncedAudioPlayer({
     };
   }, [onPlaybackUpdate, onEnded, activeIndex]);
 
-  // Preload the next track into the standby element near the end of this one
+  // Near the end of this track, make sure the standby has the next one (streaming
+  // it if the download isn't done), and retry a failed preload now and then
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio || !nextStreamUrl) return;
-    let lastAttempt = 0;
+    let lastRetry = 0;
 
-    const maybePreload = () => {
-      const standby = standbyElement();
-      if (!standby) return;
-      const loaded = standby.src === nextStreamUrl;
-      // Already preloaded, or failed very recently (e.g. network blip) — retry later
-      if (loaded && (!standby.error || Date.now() - lastAttempt < PRELOAD_RETRY_MS)) return;
+    const check = () => {
       const remaining = (audio.duration || Infinity) - audio.currentTime;
-      if (remaining > PRELOAD_LEAD_S) return;
-      lastAttempt = Date.now();
-      console.log(loaded ? 'Retrying failed preload of next track' : 'Preloading next track');
-      standby.preload = 'auto';
-      standby.src = nextStreamUrl;
-      standby.load();
+      const retryFailed = Date.now() - lastRetry > PRELOAD_RETRY_MS;
+      if (retryFailed) lastRetry = Date.now();
+      prepareStandby({ nearEnd: remaining <= PRELOAD_LEAD_S, retryFailed });
     };
 
-    maybePreload();
-    audio.addEventListener('timeupdate', maybePreload);
-    audio.addEventListener('durationchange', maybePreload);
+    check();
+    audio.addEventListener('timeupdate', check);
+    audio.addEventListener('durationchange', check);
     return () => {
-      audio.removeEventListener('timeupdate', maybePreload);
-      audio.removeEventListener('durationchange', maybePreload);
+      audio.removeEventListener('timeupdate', check);
+      audio.removeEventListener('durationchange', check);
     };
   }, [nextStreamUrl, activeIndex]);
 
@@ -332,8 +444,28 @@ export default function SyncedAudioPlayer({
       stalledMs = 0;
     };
 
+    let lastProgressAt = Date.now();
     const handleTimeUpdate = () => {
-      if (!recoveringRef.current) lastPosition = audio.currentTime;
+      if (recoveringRef.current) return;
+      if (audio.currentTime !== lastPosition) lastProgressAt = Date.now();
+      lastPosition = audio.currentTime;
+    };
+
+    // Back in the app (e.g. phone unlocked): if playback is meant to be running but
+    // isn't, fix it now rather than waiting for backed-off (and, in the background,
+    // throttled) retries
+    const handleVisibility = () => {
+      if (document.visibilityState !== 'visible' || !shouldPlayRef.current || recoveringRef.current) return;
+      const stuck = !audio.paused && Date.now() - lastProgressAt > STALL_CHECK_INTERVAL_MS * 2;
+      if (audio.error || retryTimer || stalledMs > 0 || stuck) {
+        console.log('App visible again with stuck playback, recovering');
+        clearTimeout(retryTimer);
+        retryTimer = null;
+        attempts = 0;
+        recover();
+      } else if (audio.paused && !audio.ended) {
+        audio.play().catch(err => console.error('Playback error on resume:', err));
+      }
     };
 
     const handleOnline = () => {
@@ -364,6 +496,7 @@ export default function SyncedAudioPlayer({
     audio.addEventListener('playing', handlePlaying);
     audio.addEventListener('timeupdate', handleTimeUpdate);
     window.addEventListener('online', handleOnline);
+    document.addEventListener('visibilitychange', handleVisibility);
 
     return () => {
       clearInterval(watchdog);
@@ -374,6 +507,7 @@ export default function SyncedAudioPlayer({
       audio.removeEventListener('playing', handlePlaying);
       audio.removeEventListener('timeupdate', handleTimeUpdate);
       window.removeEventListener('online', handleOnline);
+      document.removeEventListener('visibilitychange', handleVisibility);
     };
   }, [streamUrl, trackId, activeIndex]);
 
@@ -461,6 +595,10 @@ export default function SyncedAudioPlayer({
       </div>
     </div>
   );
+}
+
+function toMB(bytes) {
+  return (bytes / 1024 / 1024).toFixed(1);
 }
 
 function formatTime(seconds) {
