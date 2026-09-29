@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Icon } from './Icons';
 
 const DRIFT_THRESHOLD = 0.5; // seconds
@@ -10,11 +10,16 @@ const RECOVERY_MAX_ATTEMPTS = 40; // ~8 minutes of retrying at the max delay
 const STALL_CHECK_INTERVAL_MS = 2000;
 const STALL_TIMEOUT_MS = 12000; // no progress for this long while playing = stuck stream
 const MEDIA_ERR_ABORTED = 1;
+const HAVE_METADATA = 1;
 const HAVE_FUTURE_DATA = 3;
+// Start preloading the next track into the standby element this long before the end
+const PRELOAD_LEAD_S = 30;
+const PRELOAD_RETRY_MS = 5000; // retry a failed preload this often
 
 export default function SyncedAudioPlayer({
   streamUrl,
   trackId,
+  nextStreamUrl,
   jamClient,
   isHost,
   isConnected,
@@ -24,8 +29,16 @@ export default function SyncedAudioPlayer({
   pendingSyncRef
 }) {
   const internalAudioRef = useRef(null);
-  // Use external ref if provided, otherwise use internal ref
+  // Use external ref if provided, otherwise use internal ref.
+  // It always points at the *active* one of two audio elements: the other is a
+  // standby that preloads the next track, so a track change never has to wait on
+  // the network. That gap is what let mobile browsers suspend the app when a
+  // song ended with the screen locked.
   const audioRef = externalAudioRef || internalAudioRef;
+  const elementsRef = useRef([null, null]);
+  const activeIndexRef = useRef(0);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const nextStreamUrlRef = useRef(nextStreamUrl);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -41,12 +54,51 @@ export default function SyncedAudioPlayer({
   // Last server sync applied — used to resume at the room's position after a failure
   const lastSyncRef = useRef(null);
 
-  // Set initial volume on audio element
+  const setElement0 = useCallback((el) => {
+    elementsRef.current[0] = el;
+    if (activeIndexRef.current === 0) audioRef.current = el;
+  }, [audioRef]);
+  const setElement1 = useCallback((el) => {
+    elementsRef.current[1] = el;
+    if (activeIndexRef.current === 1) audioRef.current = el;
+  }, [audioRef]);
+
+  const standbyElement = () => elementsRef.current[1 - activeIndexRef.current];
+
+  // Make the standby element the active one (it already holds the new track)
+  const activateStandby = () => {
+    const previous = audioRef.current;
+    activeIndexRef.current = 1 - activeIndexRef.current;
+    audioRef.current = elementsRef.current[activeIndexRef.current];
+    if (previous && !previous.paused) previous.pause();
+    setActiveIndex(activeIndexRef.current);
+    return audioRef.current;
+  };
+
+  const hasPreloaded = (el, url) => !!el && !!url && el.src === url && !el.error;
+
+  useEffect(() => {
+    nextStreamUrlRef.current = nextStreamUrl;
+  }, [nextStreamUrl]);
+
+  // Point the active element at the current track. Runs before the effects that
+  // apply sync state / recovery so they act on the right element.
   useEffect(() => {
     const audio = audioRef.current;
-    if (audio) {
-      audio.volume = volume;
+    if (!audio || !streamUrl || audio.src === streamUrl) return;
+    const standby = standbyElement();
+    if (hasPreloaded(standby, streamUrl)) {
+      // Skipped to the track we'd already preloaded: switch instead of reloading
+      console.log('Switching to preloaded track');
+      activateStandby();
+    } else {
+      audio.src = streamUrl;
     }
+  }, [streamUrl]);
+
+  // Set volume on both audio elements
+  useEffect(() => {
+    elementsRef.current.forEach(el => { if (el) el.volume = volume; });
   }, [volume]);
 
   // Initialize audio element
@@ -56,6 +108,8 @@ export default function SyncedAudioPlayer({
 
     // Set initial volume
     audio.volume = volume;
+    // After a switch the new element's metadata was loaded while it was standby
+    if (audio.readyState >= HAVE_METADATA) setDuration(audio.duration);
 
     const handleLoadedMetadata = () => {
       setDuration(audio.duration);
@@ -76,11 +130,25 @@ export default function SyncedAudioPlayer({
       setIsPlaying(false);
     };
     const handleEnded = () => {
-      setIsPlaying(false);
+      const standby = standbyElement();
+      if (hasPreloaded(standby, nextStreamUrlRef.current)) {
+        // Start the preloaded next track right here, in the 'ended' event, so audio
+        // never goes idle between tracks (no React render or network round trip).
+        // The app then loads that same track as usual, which is a no-op here.
+        console.log('Track ended, handing off to preloaded next track');
+        standby.currentTime = 0;
+        standby.play().catch(err => console.error('Handoff playback error:', err));
+        activateStandby();
+        shouldPlayRef.current = true;
+        setIsPlaying(true);
+      } else {
+        setIsPlaying(false);
+      }
       onEnded?.();
     };
 
     audio.addEventListener('loadedmetadata', handleLoadedMetadata);
+    audio.addEventListener('durationchange', handleLoadedMetadata);
     audio.addEventListener('timeupdate', handleTimeUpdate);
     audio.addEventListener('play', handlePlay);
     audio.addEventListener('pause', handlePause);
@@ -88,12 +156,43 @@ export default function SyncedAudioPlayer({
 
     return () => {
       audio.removeEventListener('loadedmetadata', handleLoadedMetadata);
+      audio.removeEventListener('durationchange', handleLoadedMetadata);
       audio.removeEventListener('timeupdate', handleTimeUpdate);
       audio.removeEventListener('play', handlePlay);
       audio.removeEventListener('pause', handlePause);
       audio.removeEventListener('ended', handleEnded);
     };
-  }, [onPlaybackUpdate, onEnded]);
+  }, [onPlaybackUpdate, onEnded, activeIndex]);
+
+  // Preload the next track into the standby element near the end of this one
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio || !nextStreamUrl) return;
+    let lastAttempt = 0;
+
+    const maybePreload = () => {
+      const standby = standbyElement();
+      if (!standby) return;
+      const loaded = standby.src === nextStreamUrl;
+      // Already preloaded, or failed very recently (e.g. network blip) — retry later
+      if (loaded && (!standby.error || Date.now() - lastAttempt < PRELOAD_RETRY_MS)) return;
+      const remaining = (audio.duration || Infinity) - audio.currentTime;
+      if (remaining > PRELOAD_LEAD_S) return;
+      lastAttempt = Date.now();
+      console.log(loaded ? 'Retrying failed preload of next track' : 'Preloading next track');
+      standby.preload = 'auto';
+      standby.src = nextStreamUrl;
+      standby.load();
+    };
+
+    maybePreload();
+    audio.addEventListener('timeupdate', maybePreload);
+    audio.addEventListener('durationchange', maybePreload);
+    return () => {
+      audio.removeEventListener('timeupdate', maybePreload);
+      audio.removeEventListener('durationchange', maybePreload);
+    };
+  }, [nextStreamUrl, activeIndex]);
 
   // Apply a sync state to the audio element
   const applySyncState = (state) => {
@@ -276,7 +375,7 @@ export default function SyncedAudioPlayer({
       audio.removeEventListener('timeupdate', handleTimeUpdate);
       window.removeEventListener('online', handleOnline);
     };
-  }, [streamUrl, trackId]);
+  }, [streamUrl, trackId, activeIndex]);
 
   // Send heartbeat to server
   useEffect(() => {
@@ -303,11 +402,9 @@ export default function SyncedAudioPlayer({
 
   return (
     <div className="synced-audio-player">
-      <audio
-        ref={audioRef}
-        src={streamUrl}
-        preload="auto"
-      />
+      {/* Active + standby element; which is which flips on each handoff */}
+      <audio ref={setElement0} preload="auto" />
+      <audio ref={setElement1} preload="auto" />
 
       <div className="seek-row">
         <span className="time">{formatTime(currentTime)}</span>

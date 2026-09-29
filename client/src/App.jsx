@@ -1155,6 +1155,9 @@ function App() {
   }, [currentTrack, userReaction, likeActive, jamClient, navidrome, favorites, browseMode]);
 
   const roleLabel = isHost ? 'Host' : canControl ? 'Co-host' : 'Listener';
+  // What plays when the current track ends — same rules as handleTrackEnded, so
+  // the player can preload it and switch without a gap
+  const nextUpTrack = queue[0] || (canControl && repeatMode ? currentTrack : null);
 
   const joinRoomById = (roomId) => {
     setRoomInput(roomId);
@@ -1847,6 +1850,7 @@ function App() {
                 <SyncedAudioPlayer
                   streamUrl={currentTrack.streamUrl}
                   trackId={currentTrack.id}
+                  nextStreamUrl={nextUpTrack ? navidrome.getStreamUrl(nextUpTrack.id) : null}
                   jamClient={jamClient}
                   isHost={canControl}
                   isConnected={isConnected}
